@@ -1,0 +1,37 @@
+buildType:
+  default: debug
+  description: Build types
+  choices:
+    debug:
+      short: Debug
+      long: Include debugging information without optimizations
+      buildType: Debug
+      settings:
+        CMAKE_CXX_CLANG_TIDY: "clang-tidy"
+        SKIP_LIST_BUILD_TESTS: ON
+        DBGROUP_TEST_THREAD_NUM: 8
+        DBGROUP_TEST_RANDOM_SEED: 10
+        DBGROUP_TEST_EXEC_NUM: 1E5
+        DBGROUP_TEST_OVERRIDE_MIMALLOC: OFF
+    relWithDebInfo:
+      short: RelWithDebInfo
+      long: Perform optimizations and include debugging informatin
+      buildType: RelWithDebInfo
+      settings:
+        CMAKE_CXX_CLANG_TIDY: "clang-tidy"
+        SKIP_LIST_BUILD_TESTS: ON
+        DBGROUP_TEST_THREAD_NUM: 8
+        DBGROUP_TEST_RANDOM_SEED: 10
+        DBGROUP_TEST_EXEC_NUM: 1E5
+        DBGROUP_TEST_OVERRIDE_MIMALLOC: OFF
+    release:
+      short: Release
+      long: Perform optimizations and omit debugging informatin
+      buildType: Release
+      settings:
+        CMAKE_CXX_CLANG_TIDY: "clang-tidy"
+        SKIP_LIST_BUILD_TESTS: ON
+        DBGROUP_TEST_THREAD_NUM: 8
+        DBGROUP_TEST_RANDOM_SEED: 10
+        DBGROUP_TEST_EXEC_NUM: 1E5
+        DBGROUP_TEST_OVERRIDE_MIMALLOC: OFF

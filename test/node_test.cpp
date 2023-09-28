@@ -139,9 +139,18 @@ class NodeFixture : public testing::Test
     const auto &payload = payloads_.at(1);
     const auto pay_len = ::dbgroup::index::test::GetLength(payload);
 
-    EXPECT_TRUE(node_->Update(payload, pay_len));
+    const auto old_v = node_->Update(payload, pay_len);
+    ASSERT_EQ(0UL, old_v & kDelBit);
     EXPECT_TRUE(node_->Read(tmp_pay));
     EXPECT_TRUE(IsEqual<PayComp>(payload, tmp_pay));
+
+    if constexpr (IsVarLenData<Payload>()) {
+      auto *ptr = reinterpret_cast<Payload>(old_v);
+      Release<std::remove_pointer_t<Payload>>(ptr);
+    } else if constexpr (!CanCAS<Payload>()) {
+      auto *ptr = reinterpret_cast<Payload *>(old_v);
+      Release<Payload>(ptr);
+    }
   }
 
   void
@@ -153,7 +162,8 @@ class NodeFixture : public testing::Test
 
     EXPECT_TRUE(node_->Delete());
     EXPECT_FALSE(node_->Read(tmp_pay));
-    EXPECT_FALSE(node_->Update(payload, pay_len));
+    const auto old_v = node_->Update(payload, pay_len);
+    EXPECT_EQ(kDelBit, old_v & kDelBit);
   }
 
   /*####################################################################################

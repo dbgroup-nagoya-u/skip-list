@@ -127,13 +127,11 @@ class Node
     }
 
     if constexpr (!CanCAS<Payload>()) {
-      const auto v = data_.load(std::memory_order_acquire);
-      if (v != kDelBit) {
-        if constexpr (IsVarLenData<Payload>()) {
-          Release<PayloadWOPtr>(reinterpret_cast<Payload>(v));
-        } else {
-          Release<Payload>(reinterpret_cast<Payload *>(v));
-        }
+      const auto v = data_.load(std::memory_order_acquire) & ~kDelBit;
+      if constexpr (IsVarLenData<Payload>()) {
+        Release<PayloadWOPtr>(reinterpret_cast<Payload>(v));
+      } else {
+        Release<Payload>(reinterpret_cast<Payload *>(v));
       }
     }
   }
@@ -250,23 +248,23 @@ class Node
    *
    * @param payload A payload value to be stored.
    * @param pay_len The length of the given payload.
-   * @retval true if the payload is updated.
-   * @retval false if the payload has already been deleted.
+   * @retval The old value if the payload is updated.
+   * @retval kDelBit if the payload has already been deleted.
    */
   auto
   Update(  //
       const Payload &payload,
       const size_t pay_len)  //
-      -> bool
+      -> uint64_t
   {
     const auto new_v = PrepareWord(payload, pay_len);
     auto old_v = data_.load(std::memory_order_acquire);
-    while (old_v != kDelBit) {
-      if (data_.compare_exchange_weak(old_v, new_v, std::memory_order_release)) return true;
+    while ((old_v & kDelBit) == 0) {
+      if (data_.compare_exchange_weak(old_v, new_v, std::memory_order_release)) return old_v;
       SKIP_LIST_SPINLOCK_HINT
     }
 
-    return false;  // the value has been deleted
+    return kDelBit;  // the value has been deleted
   }
 
   /**
@@ -280,8 +278,9 @@ class Node
       -> bool
   {
     auto old_v = data_.load(std::memory_order_acquire);
-    while (old_v != kDelBit) {
-      if (data_.compare_exchange_weak(old_v, kDelBit, std::memory_order_relaxed)) return true;
+    while ((old_v & kDelBit) == 0) {
+      const auto del_v = old_v | kDelBit;
+      if (data_.compare_exchange_weak(old_v, del_v, std::memory_order_relaxed)) return true;
       SKIP_LIST_SPINLOCK_HINT
     }
 
@@ -292,9 +291,6 @@ class Node
   /*####################################################################################
    * Internal constants
    *##################################################################################*/
-
-  /// @brief The most significant bit represents a deleted value.
-  static constexpr uint64_t kDelBit = 1UL << 63UL;
 
   /// @brief The alignment for payload values.
   static constexpr size_t kAlign = alignof(PayloadWOPtr);

@@ -66,3 +66,5 @@ endfunction()
 
 # add unit tests to build targets
 ADD_DBGROUP_TEST("node_test")
+ADD_DBGROUP_TEST("skip_list_test")
+ADD_DBGROUP_TEST("skip_list_multi_thread_test")

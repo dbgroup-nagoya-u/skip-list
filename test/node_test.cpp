@@ -78,14 +78,14 @@ class NodeFixture : public testing::Test
     const auto pay_len = ::dbgroup::index::test::GetLength(payload);
 
     // prepare a node
-    node_ = Allocate<Node_t>(sizeof(Node_t) + kLevel * kWordSize);
+    node_ = ::dbgroup::memory::Allocate<Node_t>(sizeof(Node_t) + kLevel * kWordSize);
     new (node_) Node_t{kLevel, key, key_len, payload, pay_len};
   }
 
   void
   TearDown() override
   {
-    Release<Node_t>(node_);
+    ::dbgroup::memory::Release<Node_t>(node_);
 
     ::dbgroup::index::test::ReleaseTestData(keys_);
     ::dbgroup::index::test::ReleaseTestData(payloads_);
@@ -98,19 +98,17 @@ class NodeFixture : public testing::Test
   void
   ConstructorTest()
   {
+    EXPECT_EQ(node_->GetLevel(), kLevel);
+    EXPECT_FALSE(node_->IsDeleted());
+
     // check a key
     EXPECT_TRUE(node_->LT(keys_.at(1)));
     EXPECT_FALSE(node_->GT(keys_.at(1)));
 
     // check a payload
-    Payload payload;
+    Payload payload{};
     EXPECT_TRUE(node_->Read(payload));
     EXPECT_TRUE(IsEqual<PayComp>(payloads_.at(0), payload));
-
-    // check next nodes
-    for (size_t i = 0; i < kLevel; ++i) {
-      EXPECT_EQ(nullptr, node_->GetNext(i));
-    }
   }
 
   void
@@ -126,6 +124,7 @@ class NodeFixture : public testing::Test
   CASNextTest()
   {
     for (size_t i = 0; i < kLevel; ++i) {
+      node_->StoreNext(i, nullptr);
       EXPECT_FALSE(node_->CASNext(i, node_, node_));
       EXPECT_TRUE(node_->CASNext(i, nullptr, node_));
       EXPECT_EQ(node_, node_->GetNext(i));
@@ -133,23 +132,31 @@ class NodeFixture : public testing::Test
   }
 
   void
+  DeleteNextTest()
+  {
+    for (size_t i = 0; i < kLevel; ++i) {
+      node_->StoreNext(i, node_);
+      EXPECT_EQ(node_, node_->DeleteNext(i));
+      EXPECT_EQ(node_, node_->GetNext(i));
+    }
+  }
+
+  void
   UpdateTest()
   {
-    Payload tmp_pay;
+    Payload tmp_pay{};
     const auto &payload = payloads_.at(1);
     const auto pay_len = ::dbgroup::index::test::GetLength(payload);
 
     const auto old_v = node_->Update(payload, pay_len);
     ASSERT_EQ(0UL, old_v & kDelBit);
+    EXPECT_FALSE(node_->IsDeleted());
     EXPECT_TRUE(node_->Read(tmp_pay));
     EXPECT_TRUE(IsEqual<PayComp>(payload, tmp_pay));
 
-    if constexpr (IsVarLenData<Payload>()) {
-      auto *ptr = reinterpret_cast<Payload>(old_v);
-      Release<std::remove_pointer_t<Payload>>(ptr);
-    } else if constexpr (!CanCAS<Payload>()) {
-      auto *ptr = reinterpret_cast<Payload *>(old_v);
-      Release<Payload>(ptr);
+    if constexpr (!CanCAS<Payload>()) {
+      using PayWOPtr = std::remove_pointer_t<Payload>;
+      ::dbgroup::memory::Release<PayWOPtr>(reinterpret_cast<PayWOPtr *>(old_v));
     }
   }
 
@@ -161,6 +168,7 @@ class NodeFixture : public testing::Test
     const auto pay_len = ::dbgroup::index::test::GetLength(payload);
 
     EXPECT_TRUE(node_->Delete());
+    EXPECT_TRUE(node_->IsDeleted());
     EXPECT_FALSE(node_->Read(tmp_pay));
     const auto old_v = node_->Update(payload, pay_len);
     EXPECT_EQ(kDelBit, old_v & kDelBit);
@@ -210,6 +218,8 @@ TYPED_TEST(NodeFixture, ConstructorSetInitialValues) { TestFixture::ConstructorT
 TYPED_TEST(NodeFixture, StoreNextSetNewNextNodes) { TestFixture::StoreNextTest(); }
 
 TYPED_TEST(NodeFixture, CASNextSetNewNextNodes) { TestFixture::CASNextTest(); }
+
+TYPED_TEST(NodeFixture, DeleteNextDeleteNextLinks) { TestFixture::DeleteNextTest(); }
 
 TYPED_TEST(NodeFixture, UpdatePayloadValue) { TestFixture::UpdateTest(); }
 

@@ -84,36 +84,6 @@ ShiftAddr(  //
   return static_cast<std::byte *>(const_cast<void *>(addr)) + offset;
 }
 
-/**
- * @brief Allocate a memory region with alignments.
- *
- * @tparam T a target class.
- * @param size the size of target class.
- * @return the address of an allocated one.
- */
-template <class T>
-inline auto
-Allocate(size_t size = sizeof(T))  //
-    -> T *
-{
-  constexpr auto kAlign = static_cast<std::align_val_t>(alignof(T));
-  return reinterpret_cast<T *>(::operator new(size, kAlign));
-}
-
-/**
- * @brief A deleter function to release aligned pages.
- *
- * @tparam T a target class.
- * @param ptr the address of allocations to be released.
- */
-template <class T>
-inline void
-Release(T *ptr)
-{
-  constexpr auto kAlign = static_cast<std::align_val_t>(alignof(T));
-  ::operator delete(ptr, kAlign);
-}
-
 }  // namespace dbgroup::index::skip_list::component
 
 #endif  // SKIP_LIST_COMPONENT_COMMON_HPP

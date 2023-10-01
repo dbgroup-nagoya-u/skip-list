@@ -29,7 +29,7 @@ set(SKIP_LIST_BACKOFF_TIME "10" CACHE STRING "A sleep time for backoff [us].")
 #--------------------------------------------------------------------------------------#
 
 # configure GC
-# add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/memory-manager")
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/memory-manager")
 
 #--------------------------------------------------------------------------------------#
 # Build targets
@@ -49,9 +49,9 @@ if(NOT TARGET dbgroup::${PROJECT_NAME})
   target_include_directories(${PROJECT_NAME} INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
-  # target_link_libraries(${PROJECT_NAME} INTERFACE
-  #   dbgroup::memory_manager
-  # )
+  target_link_libraries(${PROJECT_NAME} INTERFACE
+    dbgroup::memory_manager
+  )
 endif()
 
 #--------------------------------------------------------------------------------------#

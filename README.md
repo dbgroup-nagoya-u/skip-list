@@ -16,6 +16,8 @@ sudo apt update && sudo apt install -y build-essential cmake
 
 #### Tuning Parameters
 
+- `SKIP_LIST_MAX_VARIABLE_DATA_SIZE`: The expected maximum size of a variable-length data (default `32`).
+
 #### Build Options for Unit Testing
 
 - `SKIP_LIST_BUILD_TESTS`: Build unit tests for this library if `ON` (default `OFF`).
@@ -57,10 +59,67 @@ ctest -C Release
     )
     target_link_libraries(
       <target_bin_name> PRIVATE
-      SKIP_LIST
+      dbgroup::skip_list
     )
     ```
 
 ### Read/Write APIs
 
 We provide the same read/write APIs for our index implementations. See [here](https://github.com/dbgroup-nagoya-u/index-benchmark/wiki/Common-APIs-for-Index-Implementations) for common APIs and usage examples.
+
+### Using Inline Payloads
+
+We dynamically allocate a region of memory for a payload and update/delete it using CAS instructions. However, if your payloads meet the following conditions, you can embed your payloads directly into skip list nodes as inline (note that we consider any pointers and `uint64_t` to be inline payloads by default):
+
+1. the length of a class is `8` (i.e., `static_assert(sizeof(<payload_class>) == 8)`),
+2. the last bit is reserved for a delete flag and initialized with zeros, and
+3. a specialized `CanCAS` function is implemented in the `dbgroup::index::skip_list` namespace.
+
+The following snippet is an example implementation.
+
+```cpp
+/**
+ * @brief An example class to represent inline payloads.
+ *
+ */
+struct MyClass {
+  /// an actual payload
+  uint64_t data : 63;
+
+  /// reserve at least one bit for a delete flag
+  uint64_t control_bits : 1;
+
+  // control bits must be initialzed by zeros
+  constexpr MyClass() : data{}, control_bits{0} {}
+
+  ~MyClass() = default;
+
+  // target class must be trivially copyable
+  constexpr MyClass(const MyClass &) = default;
+  constexpr MyClass &operator=(const MyClass &) = default;
+  constexpr MyClass(MyClass &&) = default;
+  constexpr MyClass &operator=(MyClass &&) = default;
+
+  // enable std::less to compare this class
+  constexpr bool
+  operator<(const MyClass &comp) const
+  {
+    return data < comp.data;
+  }
+};
+
+namespace dbgroup::index::skip_list
+{
+/**
+ * @brief An example specialization to enable in-place updating.
+ *
+ */
+template <>
+constexpr bool
+CanCAS<MyClass>()
+{
+  return true;
+}
+
+}  // namespace dbgroup::index::skip_list
+```

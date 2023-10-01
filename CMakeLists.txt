@@ -22,7 +22,6 @@ CHECK_INCLUDE_FILE_CXX("xmmintrin.h" SKIP_LIST_HAS_SPINLOCK_HINT)
 #--------------------------------------------------------------------------------------#
 
 set(SKIP_LIST_MAX_VARIABLE_DATA_SIZE "32" CACHE STRING "The expected maximum size of a variable-length data.")
-set(SKIP_LIST_BACKOFF_TIME "10" CACHE STRING "A sleep time for backoff [us].")
 
 #--------------------------------------------------------------------------------------#
 # Configure external libraries
@@ -43,7 +42,6 @@ if(NOT TARGET dbgroup::${PROJECT_NAME})
   )
   target_compile_definitions(${PROJECT_NAME} INTERFACE
     SKIP_LIST_MAX_VARIABLE_DATA_SIZE=${SKIP_LIST_MAX_VARIABLE_DATA_SIZE}
-    SKIP_LIST_BACKOFF_TIME=${SKIP_LIST_BACKOFF_TIME}
     $<$<BOOL:${SKIP_LIST_HAS_SPINLOCK_HINT}>:SKIP_LIST_HAS_SPINLOCK_HINT>
   )
   target_include_directories(${PROJECT_NAME} INTERFACE

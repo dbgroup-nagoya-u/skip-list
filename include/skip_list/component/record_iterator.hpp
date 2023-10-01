@@ -88,7 +88,7 @@ class RecordIterator
   RecordIterator &operator=(const RecordIterator &) = delete;
 
   RecordIterator &
-  operator=(RecordIterator &&obj)
+  operator=(RecordIterator &&obj) noexcept
   {
     node_ = obj.node_;
     begin_key_ = std::move(obj.begin_key_);

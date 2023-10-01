@@ -124,9 +124,6 @@ CanCAS()  //
 /// @brief The expected maximum size of a variable-length data.
 constexpr size_t kMaxVarDataSize = SKIP_LIST_MAX_VARIABLE_DATA_SIZE;
 
-/// @brief A sleep time for backoff [us].
-constexpr size_t kSleepTime = SKIP_LIST_BACKOFF_TIME;
-
 }  // namespace dbgroup::index::skip_list
 
 #endif  // SKIP_LIST_UTILITY_HPP

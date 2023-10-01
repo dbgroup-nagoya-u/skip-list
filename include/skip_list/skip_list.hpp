@@ -20,7 +20,9 @@
 // C++ standard libraries
 #include <algorithm>
 #include <functional>
+#include <future>
 #include <random>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -73,12 +75,18 @@ class SkipList
   using KeyWOPtr = std::remove_pointer_t<Key>;
   using PayWOPtr = std::remove_pointer_t<Payload>;
   using Node_t = component::Node<Key, Payload, Comp>;
+  using Stack_t = std::vector<std::pair<Node_t *, Node_t *>>;
   using ScanKey = std::optional<std::tuple<const Key &, size_t, bool>>;
   using RecordIterator = component::RecordIterator<Key, Payload, Comp>;
   using NodeTarget = typename Node_t::Target;
   using GC_t = std::conditional_t<CanCAS<Payload>(),
                                   ::dbgroup::memory::EpochBasedGC<NodeTarget>,
                                   ::dbgroup::memory::EpochBasedGC<NodeTarget, PayloadTarget>>;
+
+  template <class Entry>
+  using BulkIter = typename std::vector<Entry>::const_iterator;
+  using BulkPromise = std::promise<Stack_t>;
+  using BulkFuture = std::future<Stack_t>;
 
   /*####################################################################################
    * Public constructors
@@ -395,6 +403,83 @@ class SkipList
     return kKeyNotExist;
   }
 
+  /*####################################################################################
+   * Public bulkload API
+   *##################################################################################*/
+
+  /**
+   * @brief Bulkload specified kay/payload pairs.
+   *
+   * This function loads the given entries into this index, assuming that the entries
+   * are given as a vector of key/payload pairs (or the tuples key/payload/key-length
+   * for variable-length keys). Note that keys in records are assumed to be unique and
+   * sorted.
+   *
+   * @tparam Entry a container of a key/payload pair.
+   * @param entries the vector of entries to be bulkloaded.
+   * @param thread_num the number of threads used for bulk loading.
+   * @return kSuccess.
+   */
+  template <class Entry>
+  auto
+  Bulkload(  //
+      const std::vector<Entry> &entries,
+      const size_t thread_num = 1)  //
+      -> ReturnCode
+  {
+    if (entries.empty()) return ReturnCode::kSuccess;
+
+    Stack_t stack;
+    auto &&iter = entries.cbegin();
+    const auto rec_num = entries.size();
+    if (thread_num <= 1 || rec_num < thread_num) {
+      // bulkloading with a single thread
+      stack = BulkloadWithSingleThread<Entry>(iter, rec_num);
+    } else {
+      // bulkloading with multi-threads
+      std::vector<BulkFuture> futures{};
+      futures.reserve(thread_num);
+
+      // a lambda function for bulkloading with multi-threads
+      auto loader = [&](BulkPromise p, BulkIter<Entry> iter, size_t n) {
+        p.set_value(BulkloadWithSingleThread<Entry>(iter, n));
+      };
+
+      // create threads to construct partial lists
+      for (size_t i = 0; i < thread_num; ++i) {
+        BulkPromise p{};
+        futures.emplace_back(p.get_future());
+        const size_t n = (rec_num + i) / thread_num;
+        std::thread{loader, std::move(p), iter, n}.detach();
+        iter += n;
+      }
+
+      // wait for the worker threads to create partial trees
+      stack = futures.front().get();
+      for (size_t i = 1; i < thread_num; ++i) {
+        auto &&next_stack = futures.at(i).get();
+        for (size_t j = 0; j < max_level_; ++j) {
+          auto *next = next_stack.at(j).first;
+          if (next == nullptr) break;
+          auto *prev = stack.at(j).second;
+          if (prev == nullptr) {
+            stack.at(j).first = next;
+          } else {
+            prev->StoreNext(j, next);
+          }
+          stack.at(j).second = next_stack.at(j).second;
+        }
+      }
+    }
+
+    // link the constructed lists from the head
+    for (size_t i = 0; i < max_level_; ++i) {
+      head_->StoreNext(i, stack.at(i).first);
+    }
+
+    return ReturnCode::kSuccess;
+  }
+
  private:
   /*####################################################################################
    * Internal constants
@@ -447,10 +532,10 @@ class SkipList
    */
   [[nodiscard]] auto
   SearchNode(const Key &key) const  //
-      -> std::pair<bool, std::vector<std::pair<Node_t *, Node_t *>>>
+      -> std::pair<bool, Stack_t>
   {
     Node_t *next{nullptr};
-    std::vector<std::pair<Node_t *, Node_t *>> stack{max_level_, std::make_pair(nullptr, nullptr)};
+    Stack_t stack{max_level_, std::make_pair(nullptr, nullptr)};
     stack.emplace_back(head_, nullptr);
 
     // search and retain nodes at each level
@@ -491,7 +576,7 @@ class SkipList
   SearchNodeAt(  //
       const size_t level,
       const Key &key,
-      std::vector<std::pair<Node_t *, Node_t *>> &stack) const  //
+      Stack_t &stack) const  //
       -> bool
   {
     Node_t *next{nullptr};
@@ -534,7 +619,7 @@ class SkipList
       const size_t max_level,
       const Key &key,
       Node_t *node,
-      std::vector<std::pair<Node_t *, Node_t *>> &stack)
+      Stack_t &stack)
   {
     for (size_t i = 1; i < max_level; ++i) {
       while (true) {
@@ -545,6 +630,86 @@ class SkipList
         // the previous node has been modified, so retry
         SearchNodeAt(i, key, stack);
       }
+    }
+  }
+
+  /*####################################################################################
+   * Internal utilities for bulkloading
+   *##################################################################################*/
+
+  /**
+   * @brief Bulkload specified kay/payload pairs with a single thread.
+   *
+   * Note that this function does not create a root node. The main process must create a
+   * root node by using the nodes constructed by this function.
+   *
+   * @tparam Entry a container of a key/payload pair.
+   * @param iter the begin position of target records.
+   * @param n the number of entries to be bulkloaded.
+   * @retval 1st: the height of a constructed tree.
+   * @retval 2nd: constructed nodes in the top layer.
+   */
+  template <class Entry>
+  auto
+  BulkloadWithSingleThread(  //
+      BulkIter<Entry> iter,
+      const size_t n)  //
+      -> Stack_t
+  {
+    auto level = GetLevel();
+    auto &&[key, payload, key_len, pay_len] = ParseEntry(*iter);
+    auto *node = new (AllocateNode(level)) Node_t{level, key, key_len, payload, pay_len};
+
+    Stack_t stack{max_level_, std::make_pair(nullptr, nullptr)};
+    std::fill(stack.begin(), std::next(stack.begin(), level), std::make_pair(node, node));
+
+    const auto &iter_end = iter + n;
+    for (++iter; iter < iter_end; ++iter) {
+      level = GetLevel();
+      std::tie(key, payload, key_len, pay_len) = ParseEntry(*iter);
+      node = new (AllocateNode(level)) Node_t{level, key, key_len, payload, pay_len};
+
+      for (size_t i = 0; i < level; ++i) {
+        node->StoreNext(i, nullptr);
+        auto *prev = stack.at(i).second;
+        if (prev == nullptr) {
+          stack.at(i) = std::make_pair(node, node);
+        } else {
+          prev->StoreNext(i, node);
+          stack.at(i).second = node;
+        }
+      }
+    }
+
+    return stack;
+  }
+
+  /**
+   * @brief Parse an entry of bulkload according to key's type.
+   *
+   * @tparam Entry std::pair or std::tuple for containing entries.
+   * @param entry a bulkload entry.
+   * @retval 1st: a target key.
+   * @retval 2nd: a target payload.
+   * @retval 3rd: the length of a target key.
+   * @retval 4th: the length of a target payload.
+   */
+  template <class Entry>
+  constexpr auto
+  ParseEntry(const Entry &entry)  //
+      -> std::tuple<Key, Payload, size_t, size_t>
+  {
+    constexpr auto kTupleSize = std::tuple_size_v<Entry>;
+    static_assert(2 <= kTupleSize && kTupleSize <= 4);
+
+    if constexpr (kTupleSize == 4) {
+      return entry;
+    } else if constexpr (kTupleSize == 3) {
+      const auto &[key, payload, key_len] = entry;
+      return {key, payload, key_len, sizeof(Payload)};
+    } else {
+      const auto &[key, payload] = entry;
+      return {key, payload, sizeof(Key), sizeof(Payload)};
     }
   }
 

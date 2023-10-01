@@ -22,21 +22,6 @@
 namespace dbgroup::index::test
 {
 /*######################################################################################
- * Dummy struct for preventing some tests
- *####################################################################################*/
-
-struct ImplStat {
-};
-
-template <>
-constexpr auto
-HasBulkloadOperation<ImplStat>()  //
-    -> bool
-{
-  return false;
-}
-
-/*######################################################################################
  * Preparation for typed testing
  *####################################################################################*/
 
@@ -50,16 +35,16 @@ using Var = ::dbgroup::index::test::Var;
 using Ptr = ::dbgroup::index::test::Ptr;
 using Original = ::dbgroup::index::test::Original;
 
-using TestTargets = ::testing::Types<                  //
-    IndexInfo<SkipList, Int8, Int8, ImplStat>,         // 8byte keys/payloads
-    IndexInfo<SkipList, UInt4, Int8, ImplStat>,        // small keys
-    IndexInfo<SkipList, Int8, UInt4, ImplStat>,        // small payloads
-    IndexInfo<SkipList, UInt4, UInt4, ImplStat>,       // small keys/payloads
-    IndexInfo<SkipList, Var, Int8, ImplStat>,          // variable length keys
-    IndexInfo<SkipList, Int8, Var, ImplStat>,          // variable length payloads
-    IndexInfo<SkipList, Var, Var, ImplStat>,           // variable length keys/payloads
-    IndexInfo<SkipList, Ptr, Ptr, ImplStat>,           // pointer keys/payloads
-    IndexInfo<SkipList, Original, Original, ImplStat>  // original class keys/payloads
+using TestTargets = ::testing::Types<        //
+    IndexInfo<SkipList, Int8, Int8>,         // 8byte keys/payloads
+    IndexInfo<SkipList, UInt4, Int8>,        // small keys
+    IndexInfo<SkipList, Int8, UInt4>,        // small payloads
+    IndexInfo<SkipList, UInt4, UInt4>,       // small keys/payloads
+    IndexInfo<SkipList, Var, Int8>,          // variable length keys
+    IndexInfo<SkipList, Int8, Var>,          // variable length payloads
+    IndexInfo<SkipList, Var, Var>,           // variable length keys/payloads
+    IndexInfo<SkipList, Ptr, Ptr>,           // pointer keys/payloads
+    IndexInfo<SkipList, Original, Original>  // original class keys/payloads
     >;
 
 TYPED_TEST_SUITE(IndexMultiThreadFixture, TestTargets);

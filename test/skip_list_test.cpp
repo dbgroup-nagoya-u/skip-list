@@ -36,14 +36,6 @@ HasBulkloadOperation<ImplStat>()  //
   return false;
 }
 
-template <>
-constexpr auto
-HasScanOperation<ImplStat>()  //
-    -> bool
-{
-  return false;
-}
-
 /*######################################################################################
  * Preparation for typed testing
  *####################################################################################*/

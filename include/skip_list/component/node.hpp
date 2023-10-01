@@ -144,6 +144,16 @@ class Node
   }
 
   /**
+   * @return The key stored in this node.
+   */
+  [[nodiscard]] constexpr auto
+  GetKey() const  //
+      -> Key
+  {
+    return key_;
+  }
+
+  /**
    * @param key A target key.
    * @retval true if the key of this node is less than the given key.
    * @retval false otherwise.

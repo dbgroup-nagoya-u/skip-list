@@ -29,6 +29,7 @@
 
 // local sources
 #include "skip_list/component/node.hpp"
+#include "skip_list/component/record_iterator.hpp"
 #include "skip_list/utility.hpp"
 
 namespace dbgroup::index::skip_list
@@ -72,6 +73,8 @@ class SkipList
   using KeyWOPtr = std::remove_pointer_t<Key>;
   using PayWOPtr = std::remove_pointer_t<Payload>;
   using Node_t = component::Node<Key, Payload, Comp>;
+  using ScanKey = std::optional<std::tuple<const Key &, size_t, bool>>;
+  using RecordIterator = component::RecordIterator<Key, Payload, Comp>;
   using NodeTarget = typename Node_t::Target;
   using GC_t = std::conditional_t<CanCAS<Payload>(),
                                   ::dbgroup::memory::EpochBasedGC<NodeTarget>,
@@ -154,6 +157,36 @@ class SkipList
     }
 
     return std::nullopt;
+  }
+
+  /**
+   * @brief Perform a range scan with given keys.
+   *
+   * @param begin_key a pair of a begin key and its openness (true=closed).
+   * @param end_key a pair of an end key and its openness (true=closed).
+   * @return an iterator to access scanned records.
+   */
+  auto
+  Scan(  //
+      const ScanKey &begin_key = std::nullopt,
+      const ScanKey &end_key = std::nullopt)  //
+      -> RecordIterator
+  {
+    auto &&guard = gc_.CreateEpochGuard();
+
+    Node_t *node;
+    if (begin_key) {
+      const auto &[key, dummy, closed] = *begin_key;
+      auto &&[found, stack] = SearchNode(key);
+      node = stack.front().second;
+      if (found && !closed) {
+        node = node->GetNext(0);
+      }
+    } else {
+      node = head_->GetNext(0);
+    }
+
+    return RecordIterator{this, node, begin_key, end_key, std::move(guard)};
   }
 
   /*####################################################################################

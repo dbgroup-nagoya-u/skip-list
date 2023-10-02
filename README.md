@@ -1,6 +1,6 @@
 # Skip Lists
 
-![Ubuntu-20.04](https://github.com/dbgroup-nagoya-u/skip-list/workflows/Ubuntu-20.04/badge.svg?branch=main)
+[![Ubuntu-20.04](https://github.com/dbgroup-nagoya-u/skip-list/actions/workflows/unit_tests.yaml/badge.svg)](https://github.com/dbgroup-nagoya-u/skip-list/actions/workflows/unit_tests.yaml)
 
 ## Build
 

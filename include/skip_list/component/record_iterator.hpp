@@ -92,7 +92,6 @@ class RecordIterator
   {
     node_ = obj.node_;
     begin_key_ = std::move(obj.begin_key_);
-    guard_.~EpochGuard();
     guard_ = std::move(obj.guard_);
 
     return *this;

@@ -18,6 +18,9 @@ set(DBGROUP_TEST_THREAD_NUM "8" CACHE STRING "The number of worker threads for t
 set(DBGROUP_TEST_RANDOM_SEED "0" CACHE STRING "A fixed seed value to reproduce unit tests.")
 set(DBGROUP_TEST_EXEC_NUM "1E5" CACHE STRING "TThe number of executions per a thread.")
 option(DBGROUP_TEST_OVERRIDE_MIMALLOC "Override entire memory allocation with mimalloc" OFF)
+if(${SKIP_LIST_USE_ON_PMEM})
+  set(DBGROUP_TEST_TMP_PMEM_PATH "" CACHE STRING "The path to a persistent storage.")
+endif()
 
 #--------------------------------------------------------------------------------------#
 # Build Unit Tests
@@ -46,6 +49,7 @@ function(ADD_DBGROUP_TEST DBGROUP_TEST_TARGET)
     DBGROUP_TEST_THREAD_NUM=${DBGROUP_TEST_THREAD_NUM}
     DBGROUP_TEST_RANDOM_SEED=${DBGROUP_TEST_RANDOM_SEED}
     DBGROUP_TEST_EXEC_NUM=${DBGROUP_TEST_EXEC_NUM}
+    $<$<BOOL:${SKIP_LIST_USE_ON_PMEM}>:DBGROUP_TEST_TMP_PMEM_PATH=${DBGROUP_TEST_TMP_PMEM_PATH}>
   )
   target_include_directories(${DBGROUP_TEST_TARGET} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -66,3 +70,6 @@ endfunction()
 ADD_DBGROUP_TEST("node_test")
 ADD_DBGROUP_TEST("skip_list_test")
 ADD_DBGROUP_TEST("skip_list_multi_thread_test")
+if(${SKIP_LIST_USE_ON_PMEM})
+  ADD_DBGROUP_TEST("node_on_pmem_test")
+endif()

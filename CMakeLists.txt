@@ -22,6 +22,7 @@ CHECK_INCLUDE_FILE_CXX("xmmintrin.h" SKIP_LIST_HAS_SPINLOCK_HINT)
 #--------------------------------------------------------------------------------------#
 
 set(SKIP_LIST_MAX_VARIABLE_DATA_SIZE "32" CACHE STRING "The expected maximum size of a variable-length data.")
+option(SKIP_LIST_USE_ON_PMEM "Build a class for on persistent memory." OFF)
 
 #--------------------------------------------------------------------------------------#
 # Configure external libraries
@@ -29,6 +30,10 @@ set(SKIP_LIST_MAX_VARIABLE_DATA_SIZE "32" CACHE STRING "The expected maximum siz
 
 # configure GC
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/memory-manager")
+
+if(${SKIP_LIST_USE_ON_PMEM})
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/pmwcas")
+endif()
 
 #--------------------------------------------------------------------------------------#
 # Build targets
@@ -43,12 +48,14 @@ if(NOT TARGET dbgroup::${PROJECT_NAME})
   target_compile_definitions(${PROJECT_NAME} INTERFACE
     SKIP_LIST_MAX_VARIABLE_DATA_SIZE=${SKIP_LIST_MAX_VARIABLE_DATA_SIZE}
     $<$<BOOL:${SKIP_LIST_HAS_SPINLOCK_HINT}>:SKIP_LIST_HAS_SPINLOCK_HINT>
+    $<$<BOOL:${SKIP_LIST_USE_ON_PMEM}>:SKIP_LIST_USE_ON_PMEM>
   )
   target_include_directories(${PROJECT_NAME} INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
   target_link_libraries(${PROJECT_NAME} INTERFACE
     dbgroup::memory_manager
+    $<$<BOOL:${SKIP_LIST_USE_ON_PMEM}>:dbgroup::pmwcas>
   )
 endif()
 

@@ -20,11 +20,17 @@
 // C++ standard libraries
 #include <cstring>
 #include <functional>
+#include <iostream>
 #include <memory>
 
 // external system libraries
 #ifdef SKIP_LIST_HAS_SPINLOCK_HINT
 #include <xmmintrin.h>
+#endif
+
+#ifdef SKIP_LIST_USE_ON_PMEM
+#include <libpmem.h>
+#include <libpmemobj.h>
 #endif
 
 // local sources
@@ -43,8 +49,10 @@ namespace dbgroup::index::skip_list::component
  * Internal constants
  *####################################################################################*/
 
-/// @brief The most significant bit represents a deleted value.
-constexpr uint64_t kDelBit = 1UL << 63UL;
+#ifdef SKIP_LIST_USE_ON_PMEM
+/// We do not use type checks in PMDK.
+constexpr uint64_t kDefaultPMDKType = 0;
+#endif
 
 /*######################################################################################
  * Internal utility functions
@@ -83,6 +91,31 @@ ShiftAddr(  //
 {
   return static_cast<std::byte *>(const_cast<void *>(addr)) + offset;
 }
+
+#ifdef SKIP_LIST_USE_ON_PMEM
+/**
+ * @brief Allocate a region of persistent memory by using a given pool.
+ *
+ * Internally, this function uses pmemobj_zalloc, and so an allocated region is filled
+ * with zeros.
+ *
+ * @param pop the pointer to a pmemobj pool instance.
+ * @param oid the address of a PMEMoid instance to store an allocated region.
+ * @param size the desired size of allocation.
+ */
+inline void
+AllocatePmem(  //
+    PMEMobjpool *pop,
+    PMEMoid *oid,
+    const size_t size)
+{
+  const auto rc = pmemobj_alloc(pop, oid, size, kDefaultPMDKType, NULL, NULL);
+  if (rc != 0) {
+    std::cerr << pmemobj_errormsg() << std::endl;
+    throw std::bad_alloc{};
+  }
+}
+#endif
 
 }  // namespace dbgroup::index::skip_list::component
 

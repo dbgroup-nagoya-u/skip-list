@@ -60,6 +60,7 @@ class NodeFixture : public testing::Test
    *##################################################################################*/
 
   static constexpr size_t kLevel = 10;
+  static constexpr auto kDelBit = Node_t::kDelBit;
 
   /*####################################################################################
    * Setup/Teardown

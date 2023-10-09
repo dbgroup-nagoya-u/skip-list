@@ -230,7 +230,7 @@ class SkipList
       if (found) {
         // the same key has been found, so perform update
         auto old_v = stack.front().second->Update(payload, pay_len);
-        if (old_v != component::kDelBit) {
+        if (old_v != kDelBit) {
           if constexpr (!CanCAS<Payload>()) {
             gc_.template AddGarbage<PayloadTarget>(reinterpret_cast<void *>(old_v));
           }
@@ -341,7 +341,7 @@ class SkipList
     auto &&[found, stack] = SearchNode(key);
     while (found) {
       auto old_v = stack.front().second->Update(payload, pay_len);
-      if (old_v != component::kDelBit) {
+      if (old_v != kDelBit) {
         if constexpr (!CanCAS<Payload>()) {
           gc_.template AddGarbage<PayloadTarget>(reinterpret_cast<void *>(old_v));
         }
@@ -487,6 +487,9 @@ class SkipList
 
   /// @brief Napier's constant.
   static constexpr double kE = 2.71828182845904523536;
+
+  /// @brief The most significant bit represents a deleted value.
+  static constexpr uint64_t kDelBit = Node_t::kDelBit;
 
   /*####################################################################################
    * Internal utility functions

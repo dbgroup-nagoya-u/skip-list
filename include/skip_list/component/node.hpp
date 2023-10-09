@@ -45,6 +45,13 @@ class Node
   using PayWOPtr = std::remove_pointer_t<Payload>;
 
   /*####################################################################################
+   * Public constants
+   *##################################################################################*/
+
+  /// @brief The most significant bit represents a deleted value.
+  static constexpr uint64_t kDelBit = 1UL << 63UL;
+
+  /*####################################################################################
    * Public classes
    *##################################################################################*/
 
@@ -249,16 +256,16 @@ class Node
   DeleteNext(const size_t level)  //
       -> Node *
   {
-    auto old = next_nodes_[level].load(std::memory_order_acquire);
+    auto next = next_nodes_[level].load(std::memory_order_relaxed);
     while (true) {
-      assert((old & kDelBit) == 0);
+      assert((next & kDelBit) == 0);
 
-      const auto del = old | kDelBit;
-      if (next_nodes_[level].compare_exchange_weak(old, del, std::memory_order_relaxed)) break;
+      const auto del = next | kDelBit;
+      if (next_nodes_[level].compare_exchange_weak(next, del, std::memory_order_acquire)) break;
       SKIP_LIST_SPINLOCK_HINT
     }
 
-    return reinterpret_cast<Node *>(old);
+    return reinterpret_cast<Node *>(next);
   }
 
   /*####################################################################################
@@ -312,7 +319,7 @@ class Node
       -> uint64_t
   {
     const auto new_v = PrepareWord(payload, pay_len);
-    auto old_v = data_.load(std::memory_order_acquire);
+    auto old_v = data_.load(std::memory_order_relaxed);
     while ((old_v & kDelBit) == 0) {
       if (data_.compare_exchange_weak(old_v, new_v, std::memory_order_release)) return old_v;
       SKIP_LIST_SPINLOCK_HINT
@@ -331,7 +338,7 @@ class Node
   Delete()  //
       -> bool
   {
-    auto old_v = data_.load(std::memory_order_acquire);
+    auto old_v = data_.load(std::memory_order_relaxed);
     while ((old_v & kDelBit) == 0) {
       const auto del_v = old_v | kDelBit;
       if (data_.compare_exchange_weak(old_v, del_v, std::memory_order_relaxed)) return true;
@@ -369,7 +376,7 @@ class Node
   static auto
   PrepareWord(  //
       const Payload &payload,
-      const size_t pay_len)  //
+      [[maybe_unused]] const size_t pay_len)  //
       -> uint64_t
   {
     uint64_t data;
@@ -377,8 +384,8 @@ class Node
       memcpy(&data, &payload, kWordSize);
       assert((data & kDelBit) == 0);
     } else if constexpr (IsVarLenData<Payload>()) {
-      auto *ptr = ::dbgroup::memory::Allocate<size_t>(kHeaderLen + pay_len);
-      *ptr = pay_len;
+      auto *ptr = ::dbgroup::memory::Allocate<PayWOPtr>(kHeaderLen + pay_len);
+      *reinterpret_cast<size_t *>(ptr) = pay_len;
       memcpy(ShiftAddr(ptr, kHeaderLen), payload, pay_len);
       data = reinterpret_cast<uint64_t>(ptr);
     } else {

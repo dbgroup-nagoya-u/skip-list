@@ -4,3 +4,6 @@
 [submodule "external/memory-manager"]
 	path = external/memory-manager
 	url = https://github.com/dbgroup-nagoya-u/memory-manager.git
+[submodule "external/pmwcas"]
+	path = external/pmwcas
+	url = git@github.com:dbgroup-nagoya-u/pmwcas.git

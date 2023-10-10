@@ -49,7 +49,6 @@ class NodeOnPMEM
   using KeyWOPtr = std::remove_pointer_t<Key>;
   using PayWOPtr = std::remove_pointer_t<Payload>;
   using DescriptorPool = ::dbgroup::atomic::pmwcas::DescriptorPool;
-  using PMwCASDescriptor = ::dbgroup::atomic::pmwcas::component::PMwCASDescriptor;
 
   /*####################################################################################
    * Public constants
@@ -156,6 +155,7 @@ class NodeOnPMEM
     }
 
     if constexpr (!CanCAS<Payload>()) {
+      data_.off = data_.off & ~kDelBit;
       pmemobj_free(&data_);
     }
   }
@@ -182,7 +182,9 @@ class NodeOnPMEM
       -> Key
   {
     if constexpr (KeyIsInline()) {
-      return *reinterpret_cast<const Key *>(&key_);
+      Key key{};
+      memcpy(&key, reinterpret_cast<const void *>(&key_), sizeof(Key));
+      return key;
     } else if constexpr (IsVarLenData<Key>()) {
       return reinterpret_cast<Key>(pmemobj_direct(key_));
     } else {
@@ -307,6 +309,16 @@ class NodeOnPMEM
     }
   }
 
+  /**
+   * @brief Remove all the next pointers.
+   *
+   */
+  void
+  RemoveAllNextPointers()
+  {
+    pmem_memset_persist(next_nodes_, 0, kWordSize * level_);
+  }
+
   /*####################################################################################
    * Read/Write APIs
    *##################################################################################*/
@@ -392,19 +404,24 @@ class NodeOnPMEM
    * @brief Delete the stored payload.
    *
    * @param pool A pool of PMwCAS descriptors.
+   * @param oid A temporary OID to avoid memory leak.
    * @retval true if the payload is deleted.
    * @retval false if the payload has already been deleted.
    */
   auto
-  Delete(DescriptorPool *pool)  //
+  Delete(  //
+      DescriptorPool *pool,
+      PMEMoid *oid)  //
       -> bool
   {
+    const auto del_off = pmemobj_oid(this).off;
     auto *addr = &(data_.off);
     auto old_v = atomic::pmwcas::Read<uint64_t>(addr, std::memory_order_relaxed);
     while ((old_v & kDelBit) == 0) {
       const auto del_v = old_v | kDelBit;
       auto *desc = pool->Get();
       desc->Add(addr, old_v, del_v, std::memory_order_relaxed);
+      desc->Add(&(oid->off), kNullPtr, del_off, std::memory_order_relaxed);
       if (desc->PMwCAS()) return true;
       SKIP_LIST_SPINLOCK_HINT
     }

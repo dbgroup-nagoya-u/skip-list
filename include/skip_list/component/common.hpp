@@ -109,7 +109,7 @@ AllocatePmem(  //
     PMEMoid *oid,
     const size_t size)
 {
-  const auto rc = pmemobj_alloc(pop, oid, size, kDefaultPMDKType, NULL, NULL);
+  const auto rc = pmemobj_alloc(pop, oid, size, kDefaultPMDKType, nullptr, nullptr);
   if (rc != 0) {
     throw std::runtime_error{pmemobj_errormsg()};
   }

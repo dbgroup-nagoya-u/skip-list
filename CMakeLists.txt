@@ -28,10 +28,11 @@ option(SKIP_LIST_USE_ON_PMEM "Build a class for on persistent memory." OFF)
 # Configure external libraries
 #--------------------------------------------------------------------------------------#
 
-# configure GC
-add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/memory-manager")
-
-if(${SKIP_LIST_USE_ON_PMEM})
+if(NOT ${SKIP_LIST_USE_ON_PMEM})
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/memory-manager")
+else()
+  set(MEMORY_MANAGER_USE_PERSISTENT_MEMORY "ON" CACHE STRING "" FORCE)
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/memory-manager")
   add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/pmwcas")
 endif()
 

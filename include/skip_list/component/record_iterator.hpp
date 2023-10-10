@@ -24,11 +24,21 @@
 #include "skip_list/component/common.hpp"
 #include "skip_list/component/node.hpp"
 
+#ifdef SKIP_LIST_USE_ON_PMEM
+#include "skip_list/component/node_on_pmem.hpp"
+#endif
+
 namespace dbgroup::index::skip_list
 {
 // forward declaratoin
 template <class K, class V, class C>
 class SkipList;
+
+#ifdef SKIP_LIST_USE_ON_PMEM
+// forward declaratoin
+template <class K, class V, class C>
+class SkipListOnPMEM;
+#endif
 
 namespace component
 {
@@ -36,7 +46,7 @@ namespace component
  * @brief A class to represent iterators in scanning.
  *
  */
-template <class Key, class Payload, class Comp>
+template <class Key, class Payload, class Comp, bool kOnPMEM = false>
 class RecordIterator
 {
  public:
@@ -46,8 +56,15 @@ class RecordIterator
 
   using EpochGuard = ::dbgroup::memory::component::EpochGuard;
   using ScanKey = std::optional<std::tuple<Key, size_t, bool>>;
-  using Node_t = Node<Key, Payload, Comp>;
+#ifndef SKIP_LIST_USE_ON_PMEM
   using SkipList_t = SkipList<Key, Payload, Comp>;
+  using Node_t = Node<Key, Payload, Comp>;
+#else
+  using SkipList_t = std::conditional_t<!kOnPMEM,
+                                        SkipList<Key, Payload, Comp>,  //
+                                        SkipListOnPMEM<Key, Payload, Comp>>;
+  using Node_t = typename SkipList_t::Node_t;
+#endif
 
   /*####################################################################################
    * Public constructors and assignment operators

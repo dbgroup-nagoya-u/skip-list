@@ -196,7 +196,8 @@ class NodeFixture : public testing::Test
     const auto pay_len = ::dbgroup::index::test::GetLength(payload);
 
     auto *oid = reinterpret_cast<PMEMoid *>(pmemobj_direct(oid_));
-    EXPECT_TRUE(node_->Delete(desc_pool_.get()));
+    oid->off = 0UL;
+    EXPECT_TRUE(node_->Delete(desc_pool_.get(), oid));
     EXPECT_TRUE(node_->IsDeleted());
     EXPECT_FALSE(node_->Read(tmp_pay));
     const auto old_v = node_->Update(payload, pay_len, desc_pool_.get(), pop_, oid);

@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
-#ifndef SKIP_LIST_SKIP_LIST_HPP
-#define SKIP_LIST_SKIP_LIST_HPP
+#ifndef SKIP_LIST_SKIP_LIST_ON_PMEM_HPP
+#define SKIP_LIST_SKIP_LIST_ON_PMEM_HPP
 
 // C++ standard libraries
 #include <algorithm>
+#include <filesystem>
 #include <functional>
 #include <future>
 #include <random>
@@ -28,9 +29,10 @@
 
 // external sources
 #include "memory/epoch_based_gc.hpp"
+#include "pmwcas/descriptor_pool.hpp"
 
 // local sources
-#include "skip_list/component/node.hpp"
+#include "skip_list/component/node_on_pmem.hpp"
 #include "skip_list/component/record_iterator.hpp"
 #include "skip_list/utility.hpp"
 
@@ -44,7 +46,7 @@ namespace dbgroup::index::skip_list
  * @tparam Comp A class for ordering keys.
  */
 template <class Key, class Payload, class Comp = std::less<Key>>
-class SkipList
+class SkipListOnPMEM
 {
  public:
   /*####################################################################################
@@ -61,11 +63,12 @@ class SkipList
    *##################################################################################*/
 
   /**
-   * @brief A dummy struct for representing garbage of payloads.
+   * @brief A dummy struct for representing garbage of payloads on persistent memory.
    *
    */
   struct alignas(kPayTargetAlign) PayloadTarget : public ::dbgroup::memory::DefaultTarget {
-    // use the default parameters
+    // nodes are stored in persistent memory
+    static constexpr bool kOnPMEM = true;
   };
 
   /*####################################################################################
@@ -74,14 +77,15 @@ class SkipList
 
   using KeyWOPtr = std::remove_pointer_t<Key>;
   using PayWOPtr = std::remove_pointer_t<Payload>;
-  using Node_t = component::Node<Key, Payload, Comp>;
+  using Node_t = component::NodeOnPMEM<Key, Payload, Comp>;
+  using RecordIterator = component::RecordIterator<Key, Payload, Comp, true>;
   using Stack_t = std::vector<std::pair<Node_t *, Node_t *>>;
   using ScanKey = std::optional<std::tuple<const Key &, size_t, bool>>;
-  using RecordIterator = component::RecordIterator<Key, Payload, Comp>;
   using NodeTarget = typename Node_t::Target;
   using GC_t = std::conditional_t<CanCAS<Payload>(),
                                   ::dbgroup::memory::EpochBasedGC<NodeTarget>,
                                   ::dbgroup::memory::EpochBasedGC<NodeTarget, PayloadTarget>>;
+  using DescriptorPool = ::dbgroup::atomic::pmwcas::DescriptorPool;
 
   template <class Entry>
   using BulkIter = typename std::vector<Entry>::const_iterator;
@@ -95,44 +99,86 @@ class SkipList
   /**
    * @brief Construct a new Skip List object
    *
+   * @param pmem_dir The path to a directory on persistent memory to store an index.
+   * @param max_size The maximum capacity in bytes for an index.
    * @param max_level The maximum level in this skip list.
    * @param p The probability of determining the levels of each node.
+   * @param layout_name The layout name.
    * @param gc_interval_microsec GC internal [us] (default: 10ms).
    * @param gc_thread_num The number of GC threads (default: 1).
    */
-  explicit SkipList(  //
+  explicit SkipListOnPMEM(  //
+      const std::string &pmem_dir,
+      const size_t max_size,
       const size_t max_level = kDefaultMaxHeight,
       const double p = kDefaultProb,
+      std::string layout_name = "skip_list",
+      const size_t gc_size = PMEMOBJ_MIN_POOL * 2,
       const size_t gc_interval_micro_sec = kDefaultGCTime,
       const size_t gc_thread_num = kDefaultGCThreadNum)
-      : max_level_{max_level}, p_{p}, gc_{gc_interval_micro_sec, gc_thread_num}
+      : max_level_{max_level},
+        p_{p},
+        index_path_{pmem_dir},
+        gc_path_{pmem_dir},
+        pmwcas_path_{pmem_dir},
+        layout_name_{std::move(layout_name)},
+        gc_size_{gc_size},
+        gc_interval_{gc_interval_micro_sec},
+        gc_num_{gc_thread_num}
   {
-    gc_.StartGC();
+    // check arguments
+    if (!std::filesystem::is_directory(pmem_dir)) {
+      throw std::runtime_error{"The given path is not a directory"};
+    }
+    index_path_ /= "skip_list";
+    gc_path_ /= "garbage_collection_pool";
+    pmwcas_path_ /= "pmwcas_descriptor_pool";
+
+    // prepare a PMEMobjpool
+    constexpr auto kModeRW = S_IRUSR | S_IWUSR;  // NOLINT
+    const auto exist = std::filesystem::exists(index_path_);
+    pop_ = exist ? pmemobj_open(index_path_.c_str(), layout_name_.c_str())
+                 : pmemobj_create(index_path_.c_str(), layout_name_.c_str(), max_size, kModeRW);
+    if (pop_ == nullptr) {
+      throw std::runtime_error{pmemobj_errormsg()};
+    }
+
+    // prepare a head node
+    auto &&root = pmemobj_root(pop_, sizeof(Node_t) + max_level_ * kWordSize);
+    pop_id_ = root.pool_uuid_lo;
+    head_ = exist ? reinterpret_cast<Node_t *>(pmemobj_direct(root))
+                  : new (pmemobj_direct(root)) Node_t{pop_id_, max_level_};
+
+    // prepare external components
+    desc_pool_ = std::make_unique<DescriptorPool>(pmwcas_path_, layout_name_);
+    gc_ = std::make_unique<GC_t>(gc_path_, gc_size_, layout_name_, gc_interval_, gc_num_);
+
+    // perform a recovery procedure if needed
+    RecoveryIfNeeded();
+
+    // start GC
+    gc_->StartGC();
   }
 
-  SkipList(const SkipList &) = delete;
-  SkipList(SkipList &&) = delete;
+  SkipListOnPMEM(const SkipListOnPMEM &) = delete;
+  SkipListOnPMEM(SkipListOnPMEM &&) = delete;
 
-  auto operator=(const SkipList &) -> SkipList & = delete;
-  auto operator=(SkipList &&) -> SkipList & = delete;
+  auto operator=(const SkipListOnPMEM &) -> SkipListOnPMEM & = delete;
+  auto operator=(SkipListOnPMEM &&) -> SkipListOnPMEM & = delete;
 
   /*##################################################################################
    * Public destructors
    *################################################################################*/
 
   /**
-   * @brief Destroy the SkipList object.
+   * @brief Destroy the SkipListOnPMEM object.
    *
    */
-  ~SkipList()
+  ~SkipListOnPMEM()
   {
-    auto *cur = head_;
-    do {
-      auto *prev = cur;
-      cur = cur->GetNext(0);
-      prev->~Node_t();
-      ::dbgroup::memory::Release<Node_t>(prev);
-    } while (cur != nullptr);
+    gc_ = nullptr;
+    desc_pool_ = nullptr;
+    pmemobj_close(pop_);
   }
 
   /*####################################################################################
@@ -153,7 +199,7 @@ class SkipList
       [[maybe_unused]] const size_t key_len = sizeof(Key))  //
       -> std::optional<Payload>
   {
-    [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
+    [[maybe_unused]] const auto &guard = gc_->CreateEpochGuard();
     Payload payload;
 
     auto &&[found, stack] = SearchNode(key);
@@ -178,7 +224,7 @@ class SkipList
       const ScanKey &end_key = std::nullopt)  //
       -> RecordIterator
   {
-    auto &&guard = gc_.CreateEpochGuard();
+    auto &&guard = gc_->CreateEpochGuard();
 
     Node_t *node;
     if (begin_key) {
@@ -219,36 +265,42 @@ class SkipList
       const size_t pay_len = sizeof(Payload))  //
       -> ReturnCode
   {
-    [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
+    [[maybe_unused]] const auto &guard = gc_->CreateEpochGuard();
     size_t level{};
     Node_t *new_node{nullptr};
+    PMEMoid *oid{nullptr};
 
     auto &&[found, stack] = SearchNode(key);
     while (true) {
       if (found) {
-        // the same key has been found, so perform update
-        auto old_v = stack.front().second->Update(payload, pay_len);
-        if (old_v != kDelBit) {
-          if constexpr (!CanCAS<Payload>()) {
-            gc_.template AddGarbage<PayloadTarget>(reinterpret_cast<void *>(old_v));
+        auto *node = stack.front().second;
+        if constexpr (CanCAS<Payload>()) {
+          // the same key has been found, so perform update
+          PMEMoid p_oid{OID_NULL};
+          if (node->Update(payload, pay_len, desc_pool_.get(), pop_, &p_oid) != kDelBit) break;
+        } else {
+          // the same key has been found, so perform update
+          auto *p_oid = gc_->template GetTmpField<PayloadTarget>(kOldPos);
+          if (node->Update(payload, pay_len, desc_pool_.get(), pop_, p_oid) != kDelBit) {
+            gc_->template AddGarbage<PayloadTarget>(p_oid);
+            break;
           }
-          ::dbgroup::memory::Release<Node_t>(new_node);
-          break;
         }
       } else {
         // create a new node if needed
         if (new_node == nullptr) {
           level = GetLevel();
-          new_node = new (AllocateNode(level)) Node_t{level, key, key_len, payload, pay_len};
+          std::tie(new_node, oid) = AllocateNode(level);
+          new (new_node) Node_t{pop_id_, level, key, key_len, payload, pay_len, pop_};
         }
 
         // try to install the new node
         auto [prev, next] = stack.front();
         new_node->StoreNext(0, next);
-        if (prev->CASNext(0, next, new_node)) {
+        if (prev->CASNext(0, next, new_node, desc_pool_.get())) {
           // link the new node at all the levels
-          InsertNodeAtAllLevels(level, key, new_node, stack);
-          break;
+          InsertNodeAtAllLevels(level, key, new_node, stack, oid);
+          return kSuccess;
         }
       }
 
@@ -256,6 +308,9 @@ class SkipList
       found = SearchNodeAt(0, key, stack);
     }
 
+    if (oid != nullptr) {
+      pmemobj_free(oid);
+    }
     return kSuccess;
   }
 
@@ -282,24 +337,26 @@ class SkipList
       const size_t pay_len = sizeof(Payload))  //
       -> ReturnCode
   {
-    [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
+    [[maybe_unused]] const auto &guard = gc_->CreateEpochGuard();
     size_t level{};
     Node_t *new_node{nullptr};
+    PMEMoid *oid{nullptr};
 
     auto &&[found, stack] = SearchNode(key);
     while (!found) {
       // create a new node if needed
       if (new_node == nullptr) {
         level = GetLevel();
-        new_node = new (AllocateNode(level)) Node_t{level, key, key_len, payload, pay_len};
+        std::tie(new_node, oid) = AllocateNode(level);
+        new (new_node) Node_t{pop_id_, level, key, key_len, payload, pay_len, pop_};
       }
 
       // try to install the new node
       auto [prev, next] = stack.front();
       new_node->StoreNext(0, next);
-      if (prev->CASNext(0, next, new_node)) {
+      if (prev->CASNext(0, next, new_node, desc_pool_.get())) {
         // link the new node at all the levels
-        InsertNodeAtAllLevels(level, key, new_node, stack);
+        InsertNodeAtAllLevels(level, key, new_node, stack, oid);
         return kSuccess;
       }
 
@@ -307,7 +364,9 @@ class SkipList
       found = SearchNodeAt(0, key, stack);
     }
 
-    ::dbgroup::memory::Release<Node_t>(new_node);
+    if (oid != nullptr) {
+      pmemobj_free(oid);
+    }
     return kKeyExist;
   }
 
@@ -334,14 +393,23 @@ class SkipList
       const size_t pay_len = sizeof(Payload))  //
       -> ReturnCode
   {
-    [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
+    [[maybe_unused]] const auto &guard = gc_->CreateEpochGuard();
 
+    [[maybe_unused]] PMEMoid *oid = nullptr;
     auto &&[found, stack] = SearchNode(key);
     while (found) {
-      auto old_v = stack.front().second->Update(payload, pay_len);
+      uint64_t old_v;
+      if constexpr (CanCAS<Payload>()) {
+        PMEMoid p_oid{OID_NULL};
+        old_v = stack.front().second->Update(payload, pay_len, desc_pool_.get(), pop_, &p_oid);
+      } else {
+        oid = gc_->template GetTmpField<PayloadTarget>(kOldPos);
+        old_v = stack.front().second->Update(payload, pay_len, desc_pool_.get(), pop_, oid);
+      }
+
       if (old_v != kDelBit) {
         if constexpr (!CanCAS<Payload>()) {
-          gc_.template AddGarbage<PayloadTarget>(reinterpret_cast<void *>(old_v));
+          gc_->template AddGarbage<PayloadTarget>(oid);
         }
         return kSuccess;
       }
@@ -371,26 +439,33 @@ class SkipList
       [[maybe_unused]] const size_t key_len = sizeof(Key))  //
       -> ReturnCode
   {
-    [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
+    [[maybe_unused]] const auto &guard = gc_->CreateEpochGuard();
 
+    PMEMoid *oid = nullptr;
     auto &&[found, stack] = SearchNode(key);
     while (found) {
+      if (oid == nullptr) {
+        oid = gc_->template GetTmpField<NodeTarget>(kOldPos);
+        oid->pool_uuid_lo = pop_id_;
+        pmem_flush(&(oid->pool_uuid_lo), kWordSize);
+      }
+
       auto *del_node = stack.front().second;
-      if (del_node->Delete()) {
+      if (del_node->Delete(desc_pool_.get(), oid)) {
         // unlink all the next pointers
         const auto max_level = del_node->GetLevel();
         for (size_t i = 0; i < max_level; ++i) {
-          auto *next = del_node->DeleteNext(i);
+          auto *next = del_node->DeleteNext(i, desc_pool_.get());
           while (true) {
             auto *prev = stack.at(i).first;
-            if (prev->CASNext(i, del_node, next)) break;
+            if (prev->CASNext(i, del_node, next, desc_pool_.get())) break;
 
             // the previous node has been modified, so retry
             SearchNodeAt(i, key, stack);
           }
         }
 
-        gc_.template AddGarbage<NodeTarget>(del_node);
+        gc_->template AddGarbage<NodeTarget>(oid);
         return kSuccess;
       }
 
@@ -478,6 +553,26 @@ class SkipList
     return ReturnCode::kSuccess;
   }
 
+  /*####################################################################################
+   * Public utilities
+   *##################################################################################*/
+
+  void
+  Clear()
+  {
+    auto *oid = gc_->template GetTmpField<NodeTarget>(kOldPos);
+    auto *cur = head_->GetNext(0);
+    while (cur != nullptr) {
+      auto *prev = cur;
+      cur = cur->GetNext(0);
+      *oid = pmemobj_oid(prev);
+      prev->~Node_t();
+      pmemobj_free(oid);
+    }
+
+    head_->RemoveAllNextPointers();
+  }
+
  private:
   /*####################################################################################
    * Internal constants
@@ -485,6 +580,15 @@ class SkipList
 
   /// @brief The most significant bit represents a deleted value.
   static constexpr uint64_t kDelBit = Node_t::kDelBit;
+
+  /// @brief The unsigned long of nullptr.
+  static constexpr uintptr_t kNullPtr = 0;
+
+  /// @brief The position of the old nodes/payloads in the temporary fields.
+  static constexpr size_t kOldPos = 0;
+
+  /// @brief The position of the new nodes in the temporary fields.
+  static constexpr size_t kNewPos = 1;
 
   /*####################################################################################
    * Internal utility functions
@@ -494,13 +598,16 @@ class SkipList
    * @brief Allocate a region of memory for a new node.
    *
    * @param level The maximum level of a new node.
-   * @return The allocated memory address.
+   * @retval 1st: The allocated memory address.
+   * @retval 2nd: The allocated OID for persistent memory.
    */
-  static auto
+  auto
   AllocateNode(const size_t level)  //
-      -> Node_t *
+      -> std::pair<Node_t *, PMEMoid *>
   {
-    return ::dbgroup::memory::Allocate<Node_t>(sizeof(Node_t) + level * kWordSize);
+    auto *oid = gc_->template GetTmpField<NodeTarget>(kNewPos);
+    component::AllocatePmem(pop_, oid, sizeof(Node_t) + level * kWordSize);
+    return {reinterpret_cast<Node_t *>(pmemobj_direct(*oid)), oid};
   }
 
   /**
@@ -537,7 +644,7 @@ class SkipList
     stack.emplace_back(head_, nullptr);
 
     // search and retain nodes at each level
-    auto *cur = head_;
+    auto *cur = stack.back().first;
     for (int64_t i = max_level_ - 1; i >= 0; --i) {
       // move forward while the next node has the smaller key
       next = cur->GetNext(i);
@@ -611,24 +718,38 @@ class SkipList
    * @param key A search key.
    * @param node A node to insert.
    * @param stack The stack of previous/next nodes of each level.
+   * @param oid A temporary OID to avoid memory leak.
    */
   void
   InsertNodeAtAllLevels(  //
       const size_t max_level,
       const Key &key,
       Node_t *node,
-      Stack_t &stack)
+      Stack_t &stack,
+      PMEMoid *oid)
   {
     for (size_t i = 1; i < max_level; ++i) {
       while (true) {
         auto [prev, next] = stack.at(i);
         node->StoreNext(i, next);
-        if (prev->CASNext(i, next, node)) break;
+        if (prev->CASNext(i, next, node, desc_pool_.get())) break;
 
         // the previous node has been modified, so retry
         SearchNodeAt(i, key, stack);
       }
     }
+
+    oid->off = kNullPtr;
+    pmem_persist(&(oid->off), kWordSize);
+  }
+
+  /**
+   * @brief Perform a recovery procedure if needed.
+   *
+   */
+  void
+  RecoveryIfNeeded()
+  {
   }
 
   /*####################################################################################
@@ -656,7 +777,8 @@ class SkipList
   {
     auto level = GetLevel();
     auto &&[key, payload, key_len, pay_len] = ParseEntry(*iter);
-    auto *node = new (AllocateNode(level)) Node_t{level, key, key_len, payload, pay_len};
+    auto [node, oid] = AllocateNode(level);
+    new (node) Node_t{pop_id_, level, key, key_len, payload, pay_len, pop_};
 
     Stack_t stack{max_level_, std::make_pair(nullptr, nullptr)};
     std::fill(stack.begin(), std::next(stack.begin(), level), std::make_pair(node, node));
@@ -665,7 +787,8 @@ class SkipList
     for (++iter; iter < iter_end; ++iter) {
       level = GetLevel();
       std::tie(key, payload, key_len, pay_len) = ParseEntry(*iter);
-      node = new (AllocateNode(level)) Node_t{level, key, key_len, payload, pay_len};
+      std::tie(node, oid) = AllocateNode(level);
+      new (node) Node_t{pop_id_, level, key, key_len, payload, pay_len, pop_};
 
       for (size_t i = 0; i < level; ++i) {
         node->StoreNext(i, nullptr);
@@ -752,12 +875,42 @@ class SkipList
   double p_{kDefaultProb};
 
   /// @brief A garbage collector.
-  GC_t gc_{};
+  std::unique_ptr<GC_t> gc_{nullptr};
 
   /// @brief The dummy head node for a search start position.
-  Node_t *head_{new (AllocateNode(max_level_)) Node_t{max_level_}};
+  Node_t *head_{nullptr};
+
+  /// @brief The pool for persistent memory.
+  PMEMobjpool *pop_{nullptr};
+
+  /// @brief The UUID of PMEMobjpool.
+  uint64_t pop_id_{0};
+
+  /// @brief The pool of PMwCAS descriptors.
+  std::unique_ptr<DescriptorPool> desc_pool_{nullptr};
+
+  /// @brief The path to a BzTree instance.
+  std::filesystem::path index_path_{};
+
+  /// @brief The path to a garbage collection instance.
+  std::filesystem::path gc_path_{};
+
+  /// @brief The path to a PMwCAS descriptor instance.
+  std::filesystem::path pmwcas_path_{};
+
+  /// @brief The name of the layout for identification purposes.
+  std::string layout_name_{};
+
+  /// @brief The amount of memory available for garbage collection.
+  size_t gc_size_{};
+
+  /// @brief The garbage collection interval.
+  size_t gc_interval_{};
+
+  /// @brief The number of worker threads used for garbage collection.
+  size_t gc_num_{};
 };
 
 }  // namespace dbgroup::index::skip_list
 
-#endif  // SKIP_LIST_SKIP_LIST_HPP
+#endif  // SKIP_LIST_SKIP_LIST_ON_PMEM_HPP

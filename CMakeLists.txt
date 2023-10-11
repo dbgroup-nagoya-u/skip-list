@@ -13,34 +13,40 @@ project(
   LANGUAGES "CXX"
 )
 
-# check SSE support for spinlock hints
-include(CheckIncludeFileCXX)
-CHECK_INCLUDE_FILE_CXX("xmmintrin.h" SKIP_LIST_HAS_SPINLOCK_HINT)
-
-#--------------------------------------------------------------------------------------#
-# Configurations
-#--------------------------------------------------------------------------------------#
-
-set(SKIP_LIST_MAX_VARIABLE_DATA_SIZE "32" CACHE STRING "The expected maximum size of a variable-length data.")
-option(SKIP_LIST_USE_ON_PMEM "Build a class for on persistent memory." OFF)
-
-#--------------------------------------------------------------------------------------#
-# Configure external libraries
-#--------------------------------------------------------------------------------------#
-
-if(NOT ${SKIP_LIST_USE_ON_PMEM})
-  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/memory-manager")
-else()
-  set(MEMORY_MANAGER_USE_PERSISTENT_MEMORY "ON" CACHE STRING "" FORCE)
-  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/memory-manager")
-  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/pmwcas")
-endif()
-
-#--------------------------------------------------------------------------------------#
-# Build targets
-#--------------------------------------------------------------------------------------#
-
 if(NOT TARGET dbgroup::${PROJECT_NAME})
+  #------------------------------------------------------------------------------------#
+  # Build parameters
+  #------------------------------------------------------------------------------------#
+
+  set(SKIP_LIST_MAX_VARIABLE_DATA_SIZE "32" CACHE STRING "The expected maximum size of a variable-length data.")
+  option(SKIP_LIST_USE_ON_PMEM "Build a class for on persistent memory." OFF)
+
+  #------------------------------------------------------------------------------------#
+  # Configurations
+  #------------------------------------------------------------------------------------#
+
+  include(CheckIncludeFileCXX)
+  include(FetchContent)
+
+  # check SSE support for spinlock hints
+  CHECK_INCLUDE_FILE_CXX("xmmintrin.h" SKIP_LIST_HAS_SPINLOCK_HINT)
+
+  if(${SKIP_LIST_USE_ON_PMEM})
+    add_subdirectory("external/pmwcas")
+    set(MEMORY_MANAGER_USE_PERSISTENT_MEMORY "ON" CACHE STRING "" FORCE)
+  endif()
+
+  FetchContent_Declare(
+    memory-manager
+    GIT_REPOSITORY "https://github.com/dbgroup-nagoya-u/memory-manager.git"
+    GIT_TAG "4f8188aeefafd9def8cea6f5624d09f5c46ff568"
+  )
+  FetchContent_MakeAvailable(memory-manager)
+
+  #------------------------------------------------------------------------------------#
+  # Build targets
+  #------------------------------------------------------------------------------------#
+
   add_library(${PROJECT_NAME} INTERFACE)
   add_library(dbgroup::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
   target_compile_features(${PROJECT_NAME} INTERFACE
@@ -64,7 +70,7 @@ endif()
 # Build unit tests
 #--------------------------------------------------------------------------------------#
 
-option(SKIP_LIST_BUILD_TESTS "Build unit tests for Bc-tree" OFF)
+option(SKIP_LIST_BUILD_TESTS "Build unit tests" OFF)
 if(${SKIP_LIST_BUILD_TESTS})
   enable_testing()
   add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/test")

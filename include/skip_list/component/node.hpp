@@ -198,6 +198,19 @@ class Node
 
   /**
    * @param level The level of the next node.
+   * @retval true if the next pointer is deleted.
+   * @retval false otherwise.
+   */
+  [[nodiscard]] auto
+  NextIsDeleted(const size_t level) const  //
+      -> bool
+  {
+    auto ptr = next_nodes_[level].load(std::memory_order_relaxed);
+    return (ptr & kDelBit) > 0;
+  }
+
+  /**
+   * @param level The level of the next node.
    * @return The pointer to the next node.
    */
   [[nodiscard]] auto

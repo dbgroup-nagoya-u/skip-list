@@ -380,13 +380,19 @@ class SkipList
         // unlink all the next pointers
         const auto max_level = del_node->GetLevel();
         for (size_t i = 0; i < max_level; ++i) {
+          // wait for the insert thread to finish linking
+          while (stack.at(i).second != del_node && !del_node->NextIsDeleted(i)) {
+            SearchNodeAt(i, key, stack, del_node);
+          }
+          if (del_node->NextIsDeleted(i)) break;  // the linking procedure has been aborted
+
+          // unlink the next pointer
           auto *next = del_node->DeleteNext(i);
           while (true) {
             auto *prev = stack.at(i).first;
             if (prev->CASNext(i, del_node, next)) break;
-
             // the previous node has been modified, so retry
-            SearchNodeAt(i, key, stack);
+            SearchNodeAt(i, key, stack, del_node);
           }
         }
 
@@ -567,6 +573,7 @@ class SkipList
    * @param level The bottom level during the search.
    * @param key A search key.
    * @param stack The stack of previous/next nodes of each level.
+   * @param del_node A deleted node due to a delete operation.
    * @retval true if the search key was found.
    * @retval false otherwise.
    */
@@ -574,7 +581,8 @@ class SkipList
   SearchNodeAt(  //
       const size_t level,
       const Key &key,
-      Stack_t &stack) const  //
+      Stack_t &stack,
+      const Node_t *del_node = nullptr) const  //
       -> bool
   {
     Node_t *next{nullptr};
@@ -585,6 +593,12 @@ class SkipList
       // move forward while the next node has the smaller key
       next = cur->GetNext(i);
       while (next != nullptr && next->LT(key)) {
+        cur = next;
+        next = cur->GetNext(i);
+      }
+
+      // check if the next node has the same key for delete operations
+      if (next != del_node && next != nullptr && !next->GT(key)) {
         cur = next;
         next = cur->GetNext(i);
       }
@@ -621,9 +635,21 @@ class SkipList
   {
     for (size_t i = 1; i < max_level; ++i) {
       while (true) {
+        // check that there is no old node
         auto [prev, next] = stack.at(i);
-        node->StoreNext(i, next);
-        if (prev->CASNext(i, next, node)) break;
+        if (next == nullptr || next->GT(key)) {
+          node->StoreNext(i, next);
+          if (prev->CASNext(i, next, node)) break;
+        }
+
+        // check that the new node is active
+        if (node->IsDeleted()) {
+          // the node has been removed, so abort
+          for (size_t j = i; j < max_level; ++j) {
+            node->DeleteNext(j);
+          }
+          return;
+        }
 
         // the previous node has been modified, so retry
         SearchNodeAt(i, key, stack);

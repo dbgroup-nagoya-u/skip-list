@@ -14,8 +14,7 @@ sudo apt update && sudo apt install -y build-essential cmake
 
 ### Build Options
 
-#### Tuning Parameters
-
+- `SKIP_LIST_USE_ON_PMEM`: Build a class for on persistent memory (default `OFF`).
 - `SKIP_LIST_MAX_VARIABLE_DATA_SIZE`: The expected maximum size of a variable-length data (default `32`).
 
 #### Build Options for Unit Testing
@@ -26,6 +25,8 @@ sudo apt update && sudo apt install -y build-essential cmake
 - `DBGROUP_TEST_EXEC_NUM`: The number of operations performed per thread (default `1E5`).
 - `DBGROUP_TEST_OVERRIDE_MIMALLOC`: Override entire memory allocation with mimalloc (default `OFF`).
     - NOTE: we use `find_package(mimalloc 1.7 REQUIRED)` to link mimalloc.
+- `DBGROUP_TEST_TMP_PMEM_PATH`: The path to a persistent storage (default: `""`).
+    - If the path is not set, the corresponding tests will be skipped.
 
 ### Build and Run Unit Tests
 

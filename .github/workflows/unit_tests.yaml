@@ -18,8 +18,14 @@ jobs:
 
     - name: Clone Repository
       uses: actions/checkout@v4
+      # with:
+      #   submodules: recursive
+
+    - name: Checkout Tools
+      uses: actions/checkout@v4
       with:
-        submodules: recursive
+        repository: dbgroup-nagoya-u/index-fixtures
+        path: test/external/index-fixtures
 
     - name: Create Build Environment
       shell: bash

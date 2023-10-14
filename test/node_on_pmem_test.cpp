@@ -15,16 +15,23 @@
  */
 
 // the corresponding header
-#include "skip_list/component/node.hpp"
+#include "skip_list/component/node_on_pmem.hpp"
 
 // external sources
 #include "gtest/gtest.h"
+#include "pmwcas/descriptor_pool.hpp"
 
 // our fixture files
 #include "external/index-fixtures/common.hpp"
 
+// local sources
+#include "common_pmem.hpp"
+
 namespace dbgroup::index::skip_list::component::test
 {
+// prepare a temporary directory
+auto *const env = testing::AddGlobalTestEnvironment(new TmpDirManager);
+
 /*######################################################################################
  * Global constants
  *####################################################################################*/
@@ -53,7 +60,8 @@ class NodeFixture : public testing::Test
   using Payload = typename KeyPayload::Payload::Data;
   using KeyComp = typename KeyPayload::Key::Comp;
   using PayComp = typename KeyPayload::Payload::Comp;
-  using Node_t = Node<Key, Payload, KeyComp>;
+  using Node_t = NodeOnPMEM<Key, Payload, KeyComp>;
+  using DescriptorPool = ::dbgroup::atomic::pmwcas::DescriptorPool;
 
   /*####################################################################################
    * Constants
@@ -78,15 +86,34 @@ class NodeFixture : public testing::Test
     const auto key_len = ::dbgroup::index::test::GetLength(key);
     const auto pay_len = ::dbgroup::index::test::GetLength(payload);
 
+    // create a persistent pool for testing
+    auto &&pool_path = GetTmpPoolPath();
+    pool_path /= kTestName;
+    if (std::filesystem::exists(pool_path)) {
+      pop_ = pmemobj_open(pool_path.c_str(), kTestName);
+    } else {
+      pop_ = pmemobj_create(pool_path.c_str(), kTestName, PMEMOBJ_MIN_POOL, kModeRW);
+    }
+
     // prepare a node
-    node_ = ::dbgroup::memory::Allocate<Node_t>(sizeof(Node_t) + kLevel * kWordSize);
-    new (node_) Node_t{kLevel, key, key_len, payload, pay_len};
+    auto &&root = pmemobj_root(pop_, sizeof(Node_t) + kLevel * kWordSize);
+    node_ = new (pmemobj_direct(root))
+        Node_t{root.pool_uuid_lo, kLevel, key, key_len, payload, pay_len, pop_};
+
+    // prepare a temporary region
+    AllocatePmem(pop_, &oid_, sizeof(PMEMoid));
+
+    // prepare a PMwCAS descriptor pool
+    auto &&desc_path = GetTmpPoolPath();
+    desc_path /= "pmwcas";
+    desc_pool_ = std::make_unique<DescriptorPool>(desc_path);
   }
 
   void
   TearDown() override
   {
-    ::dbgroup::memory::Release<Node_t>(node_);
+    pmemobj_free(&oid_);
+    pmemobj_close(pop_);
 
     ::dbgroup::index::test::ReleaseTestData(keys_);
     ::dbgroup::index::test::ReleaseTestData(payloads_);
@@ -126,8 +153,9 @@ class NodeFixture : public testing::Test
   {
     for (size_t i = 0; i < kLevel; ++i) {
       node_->StoreNext(i, nullptr);
-      EXPECT_FALSE(node_->CASNext(i, node_, node_));
-      EXPECT_TRUE(node_->CASNext(i, nullptr, node_));
+      auto *desc = desc_pool_->Get();
+      node_->CASNext(i, nullptr, node_, desc);
+      EXPECT_TRUE(desc->PMwCAS());
       EXPECT_EQ(node_, node_->GetNext(i));
     }
   }
@@ -137,7 +165,7 @@ class NodeFixture : public testing::Test
   {
     for (size_t i = 0; i < kLevel; ++i) {
       node_->StoreNext(i, node_);
-      EXPECT_EQ(node_, node_->DeleteNext(i));
+      EXPECT_EQ(node_, node_->DeleteNext(i, desc_pool_->Get()));
       EXPECT_EQ(node_, node_->GetNext(i));
     }
   }
@@ -149,15 +177,15 @@ class NodeFixture : public testing::Test
     const auto &payload = payloads_.at(1);
     const auto pay_len = ::dbgroup::index::test::GetLength(payload);
 
-    const auto old_v = node_->Update(payload, pay_len);
+    auto *oid = reinterpret_cast<PMEMoid *>(pmemobj_direct(oid_));
+    const auto old_v = node_->Update(payload, pay_len, desc_pool_->Get(), pop_, oid);
     ASSERT_EQ(0UL, old_v & kDelBit);
     EXPECT_FALSE(node_->IsDeleted());
     EXPECT_TRUE(node_->Read(tmp_pay));
     EXPECT_TRUE(IsEqual<PayComp>(payload, tmp_pay));
 
     if constexpr (!CanCAS<Payload>()) {
-      using PayWOPtr = std::remove_pointer_t<Payload>;
-      ::dbgroup::memory::Release<PayWOPtr>(reinterpret_cast<PayWOPtr *>(old_v));
+      pmemobj_free(oid);
     }
   }
 
@@ -168,10 +196,12 @@ class NodeFixture : public testing::Test
     const auto &payload = payloads_.at(1);
     const auto pay_len = ::dbgroup::index::test::GetLength(payload);
 
-    EXPECT_TRUE(node_->Delete());
+    auto *oid = reinterpret_cast<PMEMoid *>(pmemobj_direct(oid_));
+    oid->off = 0UL;
+    EXPECT_TRUE(node_->Delete(desc_pool_->Get(), oid));
     EXPECT_TRUE(node_->IsDeleted());
     EXPECT_FALSE(node_->Read(tmp_pay));
-    const auto old_v = node_->Update(payload, pay_len);
+    const auto old_v = node_->Update(payload, pay_len, desc_pool_->Get(), pop_, oid);
     EXPECT_EQ(kDelBit, old_v & kDelBit);
   }
 
@@ -182,6 +212,12 @@ class NodeFixture : public testing::Test
   std::vector<Key> keys_{};
 
   std::vector<Payload> payloads_{};
+
+  std::unique_ptr<DescriptorPool> desc_pool_{nullptr};
+
+  PMEMobjpool *pop_{nullptr};
+
+  PMEMoid oid_{OID_NULL};
 
   Node_t *node_{nullptr};
 };
@@ -205,7 +241,6 @@ using KeyPayloadPairs = ::testing::Types<  //
     KeyPayload<Var, Int8>,                 // variable length keys
     KeyPayload<Int8, Var>,                 // variable length payloads
     KeyPayload<Var, Var>,                  // variable length keys/payloads
-    KeyPayload<Ptr, Ptr>,                  // pointer keys/payloads
     KeyPayload<Original, Original>         // original class keys/payloads
     >;
 TYPED_TEST_SUITE(NodeFixture, KeyPayloadPairs);

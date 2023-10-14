@@ -40,6 +40,15 @@ constexpr size_t kCacheLineSize = 64;
 /// @brief The page size of virtual memory address.
 constexpr size_t kVMPageSize = 4096;
 
+/// @brief Napier's constant.
+constexpr double kE = 2.71828182845904523536;
+
+/// @brief The default maximum height of nodes in a skip list.
+constexpr size_t kDefaultMaxHeight = 20;
+
+/// @brief The default probability to determine node heights.
+constexpr double kDefaultProb = 1.0 / kE;
+
 /// @brief The default time interval for garbage collection [us].
 constexpr size_t kDefaultGCTime = 10000;
 
@@ -51,6 +60,17 @@ constexpr bool kClosed = true;
 
 /// @brief A flag for indicating closed intervals
 constexpr bool kOpen = false;
+
+#ifdef SKIP_LIST_USE_ON_PMEM
+/// @brief The default maximum index size [bytes].
+constexpr size_t kDefaultIndexSize = 100 * 1024 * 1024;
+
+/// @brief Do not use type checks in PMDK.
+constexpr uint64_t kDefaultPMDKType = 0;
+
+/// @brief Divide a node type from others.
+constexpr uint64_t kNodePMDKType = 1;
+#endif
 
 /*######################################################################################
  * Utility enum and classes

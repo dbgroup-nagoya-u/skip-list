@@ -8,30 +8,36 @@ buildType:
       buildType: Debug
       settings:
         CMAKE_CXX_CLANG_TIDY: ""
+        SKIP_LIST_USE_ON_PMEM: OFF
         SKIP_LIST_BUILD_TESTS: ON
         DBGROUP_TEST_THREAD_NUM: 8
         DBGROUP_TEST_RANDOM_SEED: 10
         DBGROUP_TEST_EXEC_NUM: 1E5
         DBGROUP_TEST_OVERRIDE_MIMALLOC: OFF
+        DBGROUP_TEST_TMP_PMEM_PATH: "/pmem_tmp"
     relWithDebInfo:
       short: RelWithDebInfo
       long: Perform optimizations and include debugging informatin
       buildType: RelWithDebInfo
       settings:
         CMAKE_CXX_CLANG_TIDY: ""
+        SKIP_LIST_USE_ON_PMEM: OFF
         SKIP_LIST_BUILD_TESTS: ON
         DBGROUP_TEST_THREAD_NUM: 8
         DBGROUP_TEST_RANDOM_SEED: 10
         DBGROUP_TEST_EXEC_NUM: 1E5
         DBGROUP_TEST_OVERRIDE_MIMALLOC: OFF
+        DBGROUP_TEST_TMP_PMEM_PATH: "/pmem_tmp"
     release:
       short: Release
       long: Perform optimizations and omit debugging informatin
       buildType: Release
       settings:
         CMAKE_CXX_CLANG_TIDY: ""
+        SKIP_LIST_USE_ON_PMEM: OFF
         SKIP_LIST_BUILD_TESTS: ON
         DBGROUP_TEST_THREAD_NUM: 8
         DBGROUP_TEST_RANDOM_SEED: 10
         DBGROUP_TEST_EXEC_NUM: 1E5
         DBGROUP_TEST_OVERRIDE_MIMALLOC: OFF
+        DBGROUP_TEST_TMP_PMEM_PATH: "/pmem_tmp"

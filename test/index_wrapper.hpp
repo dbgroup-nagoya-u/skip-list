@@ -57,7 +57,7 @@ class IndexWrapper
 
   ~IndexWrapper()
   {  //
-    index_->Clear();
+    EXPECT_TRUE(index_->CheckTreeConsistency());
   }
 
   auto

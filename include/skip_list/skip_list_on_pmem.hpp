@@ -543,23 +543,69 @@ class SkipListOnPMEM
   }
 
   /*####################################################################################
-   * Public utilities
+   * Utilities for tests
    *##################################################################################*/
 
-  void
-  Clear()
+  /**
+   * @retval true if all the allocated pages is in the tree.
+   * @retval false otherwise.
+   * @note This function removes all the node from the index.
+   */
+  auto
+  CheckTreeConsistency()  //
+      -> bool
   {
-    auto *oid = gc_->template GetTmpField<NodeTarget>(kOldPos);
-    auto *cur = head_->GetNext(0);
-    while (cur != nullptr) {
-      auto *prev = cur;
-      cur = cur->GetNext(0);
-      *oid = pmemobj_oid(prev);
-      prev->~Node_t();
-      pmemobj_free(oid);
+    constexpr size_t kCheckThreadNum = 4;
+
+    // select head nodes for destruction
+    const auto level = max_level_ > 6 ? 6 : 0;
+    std::vector<Node_t *> tmp_nodes{};
+    for (auto *cur = head_->GetNext(level); cur != nullptr; cur = cur->GetNext(level)) {
+      tmp_nodes.emplace_back(cur);
+    }
+    const auto num = tmp_nodes.size();
+    const size_t thread_num = num > kCheckThreadNum ? kCheckThreadNum : 1;
+    std::vector<Node_t *> nodes = {head_->GetNext(0)};
+    if (num > kCheckThreadNum) {
+      constexpr double kRate = 1.0 / kCheckThreadNum;
+      for (double r = kRate; r < 0.9; r += kRate) {
+        nodes.emplace_back(tmp_nodes.at(r * num));
+      }
+    }
+    nodes.emplace_back(nullptr);
+
+    // remove all the nodes
+    if (nodes.front() != nullptr) {
+      std::vector<std::thread> threads{};
+      for (size_t i = 0; i < thread_num; ++i) {
+        threads.emplace_back(
+            [&](Node_t *head, const Node_t *tail) {
+              auto *cur = head->GetNext(0);
+              while (cur != tail) {
+                auto *prev = cur;
+                cur = cur->GetNext(0);
+                auto &&oid = pmemobj_oid(prev);
+                ReleaseNode(&oid);
+              }
+            },
+            nodes.at(i), nodes.at(i + 1));
+      }
+      for (auto &&t : threads) {
+        t.join();
+      }
+      for (size_t i = 0; i < thread_num; ++i) {
+        auto &&oid = pmemobj_oid(nodes.at(i));
+        ReleaseNode(&oid);
+      }
+      head_->RemoveAllNextPointers();
     }
 
-    head_->RemoveAllNextPointers();
+    // wait for GC to release garbage
+    desc_pool_ = nullptr;
+    gc_ = nullptr;
+
+    return OID_IS_NULL(POBJ_FIRST_TYPE_NUM(pop_, kNodePMDKType))
+           && OID_IS_NULL(POBJ_FIRST_TYPE_NUM(pop_, kDefaultPMDKType));
   }
 
  private:

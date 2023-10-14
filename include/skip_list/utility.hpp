@@ -62,8 +62,14 @@ constexpr bool kClosed = true;
 constexpr bool kOpen = false;
 
 #ifdef SKIP_LIST_USE_ON_PMEM
-/// @brief the default maximum index size [bytes].
+/// @brief The default maximum index size [bytes].
 constexpr size_t kDefaultIndexSize = 100 * 1024 * 1024;
+
+/// @brief Do not use type checks in PMDK.
+constexpr uint64_t kDefaultPMDKType = 0;
+
+/// @brief Divide a node type from others.
+constexpr uint64_t kNodePMDKType = 1;
 #endif
 
 /*######################################################################################

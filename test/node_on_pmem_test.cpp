@@ -153,8 +153,9 @@ class NodeFixture : public testing::Test
   {
     for (size_t i = 0; i < kLevel; ++i) {
       node_->StoreNext(i, nullptr);
-      EXPECT_FALSE(node_->CASNext(i, node_, node_, desc_pool_.get()));
-      EXPECT_TRUE(node_->CASNext(i, nullptr, node_, desc_pool_.get()));
+      auto *desc = desc_pool_->Get();
+      node_->CASNext(i, nullptr, node_, desc);
+      EXPECT_TRUE(desc->PMwCAS());
       EXPECT_EQ(node_, node_->GetNext(i));
     }
   }
@@ -164,7 +165,7 @@ class NodeFixture : public testing::Test
   {
     for (size_t i = 0; i < kLevel; ++i) {
       node_->StoreNext(i, node_);
-      EXPECT_EQ(node_, node_->DeleteNext(i, desc_pool_.get()));
+      EXPECT_EQ(node_, node_->DeleteNext(i, desc_pool_->Get()));
       EXPECT_EQ(node_, node_->GetNext(i));
     }
   }
@@ -177,7 +178,7 @@ class NodeFixture : public testing::Test
     const auto pay_len = ::dbgroup::index::test::GetLength(payload);
 
     auto *oid = reinterpret_cast<PMEMoid *>(pmemobj_direct(oid_));
-    const auto old_v = node_->Update(payload, pay_len, desc_pool_.get(), pop_, oid);
+    const auto old_v = node_->Update(payload, pay_len, desc_pool_->Get(), pop_, oid);
     ASSERT_EQ(0UL, old_v & kDelBit);
     EXPECT_FALSE(node_->IsDeleted());
     EXPECT_TRUE(node_->Read(tmp_pay));
@@ -197,10 +198,10 @@ class NodeFixture : public testing::Test
 
     auto *oid = reinterpret_cast<PMEMoid *>(pmemobj_direct(oid_));
     oid->off = 0UL;
-    EXPECT_TRUE(node_->Delete(desc_pool_.get(), oid));
+    EXPECT_TRUE(node_->Delete(desc_pool_->Get(), oid));
     EXPECT_TRUE(node_->IsDeleted());
     EXPECT_FALSE(node_->Read(tmp_pay));
-    const auto old_v = node_->Update(payload, pay_len, desc_pool_.get(), pop_, oid);
+    const auto old_v = node_->Update(payload, pay_len, desc_pool_->Get(), pop_, oid);
     EXPECT_EQ(kDelBit, old_v & kDelBit);
   }
 

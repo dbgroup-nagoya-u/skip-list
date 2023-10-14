@@ -39,7 +39,7 @@ if(NOT TARGET dbgroup::${PROJECT_NAME})
   FetchContent_Declare(
     memory-manager
     GIT_REPOSITORY "https://github.com/dbgroup-nagoya-u/memory-manager.git"
-    GIT_TAG "4f8188aeefafd9def8cea6f5624d09f5c46ff568"
+    GIT_TAG "ab1b30778a11f2d6720227cbf0b728426d625f62"
   )
   FetchContent_MakeAvailable(memory-manager)
 

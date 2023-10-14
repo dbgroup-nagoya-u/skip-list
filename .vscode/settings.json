@@ -60,6 +60,7 @@
     "PMDK",
     "PMEM",
     "pmwcas",
+    "POBJ",
     "STREQ",
     "struct",
     "Wextra",

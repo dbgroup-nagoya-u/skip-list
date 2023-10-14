@@ -109,7 +109,7 @@ class SkipListOnPMEM
    */
   explicit SkipListOnPMEM(  //
       const std::string &pmem_dir,
-      const size_t max_size,
+      const size_t max_size = kDefaultIndexSize,
       const size_t max_level = kDefaultMaxHeight,
       const double p = kDefaultProb,
       std::string layout_name = "skip_list",
@@ -150,8 +150,8 @@ class SkipListOnPMEM
                   : new (pmemobj_direct(root)) Node_t{pop_id_, max_level_};
 
     // prepare external components
-    desc_pool_ = std::make_unique<DescriptorPool>(pmwcas_path_, layout_name_);
     gc_ = std::make_unique<GC_t>(gc_path_, gc_size_, layout_name_, gc_interval_, gc_num_);
+    desc_pool_ = std::make_unique<DescriptorPool>(pmwcas_path_, layout_name_);
 
     // perform a recovery procedure if needed
     RecoveryIfNeeded();
@@ -176,8 +176,8 @@ class SkipListOnPMEM
    */
   ~SkipListOnPMEM()
   {
-    gc_ = nullptr;
     desc_pool_ = nullptr;
+    gc_ = nullptr;
     pmemobj_close(pop_);
   }
 
@@ -266,7 +266,6 @@ class SkipListOnPMEM
       -> ReturnCode
   {
     [[maybe_unused]] const auto &guard = gc_->CreateEpochGuard();
-    size_t level{};
     Node_t *new_node{nullptr};
     PMEMoid *oid{nullptr};
 
@@ -277,11 +276,11 @@ class SkipListOnPMEM
         if constexpr (CanCAS<Payload>()) {
           // the same key has been found, so perform update
           PMEMoid p_oid{OID_NULL};
-          if (node->Update(payload, pay_len, desc_pool_.get(), pop_, &p_oid) != kDelBit) break;
+          if (node->Update(payload, pay_len, desc_pool_->Get(), pop_, &p_oid) != kDelBit) break;
         } else {
           // the same key has been found, so perform update
           auto *p_oid = gc_->template GetTmpField<PayloadTarget>(kOldPos);
-          if (node->Update(payload, pay_len, desc_pool_.get(), pop_, p_oid) != kDelBit) {
+          if (node->Update(payload, pay_len, desc_pool_->Get(), pop_, p_oid) != kDelBit) {
             gc_->template AddGarbage<PayloadTarget>(p_oid);
             break;
           }
@@ -289,17 +288,19 @@ class SkipListOnPMEM
       } else {
         // create a new node if needed
         if (new_node == nullptr) {
-          level = GetLevel();
+          const auto level = GetLevel();
           std::tie(new_node, oid) = AllocateNode(level);
           new (new_node) Node_t{pop_id_, level, key, key_len, payload, pay_len, pop_};
         }
 
         // try to install the new node
         auto [prev, next] = stack.front();
-        new_node->StoreNext(0, next);
-        if (prev->CASNext(0, next, new_node, desc_pool_.get())) {
+        auto *desc = desc_pool_->Get();
+        prev->CASNext(0, next, new_node, desc);
+        new_node->StoreNext(0, next, desc);
+        if (desc->PMwCAS()) {
           // link the new node at all the levels
-          InsertNodeAtAllLevels(level, key, new_node, stack, oid);
+          InsertNodeAtAllLevels(key, new_node, stack, oid);
           return kSuccess;
         }
       }
@@ -308,9 +309,7 @@ class SkipListOnPMEM
       found = SearchNodeAt(0, key, stack);
     }
 
-    if (oid != nullptr) {
-      pmemobj_free(oid);
-    }
+    ReleaseNode(oid);
     return kSuccess;
   }
 
@@ -338,7 +337,6 @@ class SkipListOnPMEM
       -> ReturnCode
   {
     [[maybe_unused]] const auto &guard = gc_->CreateEpochGuard();
-    size_t level{};
     Node_t *new_node{nullptr};
     PMEMoid *oid{nullptr};
 
@@ -346,17 +344,19 @@ class SkipListOnPMEM
     while (!found) {
       // create a new node if needed
       if (new_node == nullptr) {
-        level = GetLevel();
+        const auto level = GetLevel();
         std::tie(new_node, oid) = AllocateNode(level);
         new (new_node) Node_t{pop_id_, level, key, key_len, payload, pay_len, pop_};
       }
 
       // try to install the new node
       auto [prev, next] = stack.front();
-      new_node->StoreNext(0, next);
-      if (prev->CASNext(0, next, new_node, desc_pool_.get())) {
+      auto *desc = desc_pool_->Get();
+      prev->CASNext(0, next, new_node, desc);
+      new_node->StoreNext(0, next, desc);
+      if (desc->PMwCAS()) {
         // link the new node at all the levels
-        InsertNodeAtAllLevels(level, key, new_node, stack, oid);
+        InsertNodeAtAllLevels(key, new_node, stack, oid);
         return kSuccess;
       }
 
@@ -364,9 +364,7 @@ class SkipListOnPMEM
       found = SearchNodeAt(0, key, stack);
     }
 
-    if (oid != nullptr) {
-      pmemobj_free(oid);
-    }
+    ReleaseNode(oid);
     return kKeyExist;
   }
 
@@ -401,10 +399,10 @@ class SkipListOnPMEM
       uint64_t old_v;
       if constexpr (CanCAS<Payload>()) {
         PMEMoid p_oid{OID_NULL};
-        old_v = stack.front().second->Update(payload, pay_len, desc_pool_.get(), pop_, &p_oid);
+        old_v = stack.front().second->Update(payload, pay_len, desc_pool_->Get(), pop_, &p_oid);
       } else {
         oid = gc_->template GetTmpField<PayloadTarget>(kOldPos);
-        old_v = stack.front().second->Update(payload, pay_len, desc_pool_.get(), pop_, oid);
+        old_v = stack.front().second->Update(payload, pay_len, desc_pool_->Get(), pop_, oid);
       }
 
       if (old_v != kDelBit) {
@@ -451,21 +449,9 @@ class SkipListOnPMEM
       }
 
       auto *del_node = stack.front().second;
-      if (del_node->Delete(desc_pool_.get(), oid)) {
+      if (del_node->Delete(desc_pool_->Get(), oid)) {
         // unlink all the next pointers
-        const auto max_level = del_node->GetLevel();
-        for (size_t i = 0; i < max_level; ++i) {
-          auto *next = del_node->DeleteNext(i, desc_pool_.get());
-          while (true) {
-            auto *prev = stack.at(i).first;
-            if (prev->CASNext(i, del_node, next, desc_pool_.get())) break;
-
-            // the previous node has been modified, so retry
-            SearchNodeAt(i, key, stack);
-          }
-        }
-
-        gc_->template AddGarbage<NodeTarget>(oid);
+        DeleteNodeAtAllLevels(key, del_node, stack, oid);
         return kSuccess;
       }
 
@@ -491,7 +477,9 @@ class SkipListOnPMEM
    * @tparam Entry a container of a key/payload pair.
    * @param entries the vector of entries to be bulkloaded.
    * @param thread_num the number of threads used for bulk loading.
-   * @return kSuccess.
+   * @retval kSuccess if the specified records were added to the index.
+   * @retval kKeyExist if the index has already stored records.
+   * @note This function does not guarantee fault tolerance.
    */
   template <class Entry>
   auto
@@ -500,6 +488,7 @@ class SkipListOnPMEM
       const size_t thread_num = 1)  //
       -> ReturnCode
   {
+    if (head_->GetNext(0) != nullptr) return ReturnCode::kKeyExist;
     if (entries.empty()) return ReturnCode::kSuccess;
 
     Stack_t stack;
@@ -606,8 +595,26 @@ class SkipListOnPMEM
       -> std::pair<Node_t *, PMEMoid *>
   {
     auto *oid = gc_->template GetTmpField<NodeTarget>(kNewPos);
-    component::AllocatePmem(pop_, oid, sizeof(Node_t) + level * kWordSize);
+    auto rc = pmemobj_zalloc(pop_, oid, sizeof(Node_t) + level * kWordSize, kNodePMDKType);
+    if (rc != 0) {
+      throw std::runtime_error{pmemobj_errormsg()};
+    }
     return {reinterpret_cast<Node_t *>(pmemobj_direct(*oid)), oid};
+  }
+
+  /**
+   * @brief Destruct and release the node in a given PMEMoid.
+   *
+   * @param oid a target PMEMoid.
+   */
+  void
+  ReleaseNode(PMEMoid *oid)
+  {
+    if (oid == nullptr || OID_IS_NULL(*oid)) return;
+
+    auto *node = reinterpret_cast<Node_t *>(pmemobj_direct(*oid));
+    node->~Node_t();
+    pmemobj_free(oid);
   }
 
   /**
@@ -674,6 +681,7 @@ class SkipListOnPMEM
    * @param level The bottom level during the search.
    * @param key A search key.
    * @param stack The stack of previous/next nodes of each level.
+   * @param del_node A deleted node due to a delete operation.
    * @retval true if the search key was found.
    * @retval false otherwise.
    */
@@ -681,7 +689,8 @@ class SkipListOnPMEM
   SearchNodeAt(  //
       const size_t level,
       const Key &key,
-      Stack_t &stack) const  //
+      Stack_t &stack,
+      const Node_t *del_node = nullptr) const  //
       -> bool
   {
     Node_t *next{nullptr};
@@ -692,6 +701,12 @@ class SkipListOnPMEM
       // move forward while the next node has the smaller key
       next = cur->GetNext(i);
       while (next != nullptr && next->LT(key)) {
+        cur = next;
+        next = cur->GetNext(i);
+      }
+
+      // check if the next node has the same key for delete operations
+      if (next != del_node && next != nullptr && !next->GT(key)) {
         cur = next;
         next = cur->GetNext(i);
       }
@@ -712,6 +727,64 @@ class SkipListOnPMEM
   }
 
   /**
+   * @brief Search and construct a stack of nodes based on a given key.
+   *
+   * @param key A search key.
+   * @retval 1st: true if the search key was found. false otherwise.
+   * @retval 2nd: The stack of previous/next nodes of each level.
+   */
+  [[nodiscard]] auto
+  SearchNodeForRecovery(  //
+      const Key &key,
+      Node_t *node) const  //
+      -> std::pair<size_t, Stack_t>
+  {
+    Node_t *next{nullptr};
+    Stack_t stack{max_level_, std::make_pair(nullptr, nullptr)};
+    stack.emplace_back(head_, nullptr);
+
+    // search the top level
+    int64_t level = node->GetLevel() - 1;
+    for (; level >= 0 && node->NextIsDeleted(level); --level) {
+    }
+
+    // skip the upper levels
+    auto *cur = stack.back().first;
+    for (int64_t i = max_level_ - 1; i >= level; --i) {
+      // move forward while the next node has the smaller key
+      next = cur->GetNext(i);
+      while (next != nullptr && next->LT(key)) {
+        cur = next;
+        next = cur->GetNext(i);
+      }
+
+      // go down to the next level
+      stack.at(i) = std::make_pair(cur, next);
+    }
+
+    // search and retain nodes at each level
+    size_t bottom_level = 0;
+    for (int64_t i = level; i >= 0; --i) {
+      // move forward while the next node has the smaller key
+      next = cur->GetNext(i);
+      while (next != nullptr && !next->GT(key) && next != node) {
+        cur = next;
+        next = cur->GetNext(i);
+      }
+
+      // go down to the next level
+      if (next != node) {
+        bottom_level = i + 1;
+        break;
+      }
+
+      stack.at(i) = std::make_pair(cur, next);
+    }
+
+    return {bottom_level, stack};
+  }
+
+  /**
    * @brief Insert a given node at each level.
    *
    * @param max_level The top level of target nodes.
@@ -720,19 +793,35 @@ class SkipListOnPMEM
    * @param stack The stack of previous/next nodes of each level.
    * @param oid A temporary OID to avoid memory leak.
    */
+  template <bool kIsRecovery = false>
   void
   InsertNodeAtAllLevels(  //
-      const size_t max_level,
       const Key &key,
       Node_t *node,
       Stack_t &stack,
       PMEMoid *oid)
   {
+    const auto max_level = node->GetLevel();
     for (size_t i = 1; i < max_level; ++i) {
+      if constexpr (kIsRecovery) {
+        if (stack.at(i).second == node) continue;
+      }
+
       while (true) {
+        // check that there is no old node
         auto [prev, next] = stack.at(i);
-        node->StoreNext(i, next);
-        if (prev->CASNext(i, next, node, desc_pool_.get())) break;
+        if (next == nullptr || next->GT(key)) {
+          auto *desc = desc_pool_->Get();
+          prev->CASNext(i, next, node, desc);
+          node->StoreNext(i, next, desc);
+          if (desc->PMwCAS()) break;
+        }
+
+        // check that the new node is active
+        if (node->IsDeleted()) {
+          node->DeleteEmptyNextPointers();
+          return;
+        }
 
         // the previous node has been modified, so retry
         SearchNodeAt(i, key, stack);
@@ -744,12 +833,130 @@ class SkipListOnPMEM
   }
 
   /**
+   * @brief Insert a given node at each level.
+   *
+   * @param max_level The top level of target nodes.
+   * @param key A search key.
+   * @param node A node to insert.
+   * @param stack The stack of previous/next nodes of each level.
+   * @param oid A temporary OID to avoid memory leak.
+   */
+  template <bool kIsRecovery = false>
+  void
+  DeleteNodeAtAllLevels(  //
+      const Key &key,
+      Node_t *node,
+      Stack_t &stack,
+      PMEMoid *oid,
+      const size_t level = 0)
+  {
+    const auto max_level = node->GetLevel();
+    for (size_t i = level; i < max_level; ++i) {
+      // wait for the insert thread to finish linking
+      while (stack.at(i).second != node && !node->NextIsDeleted(i)) {
+        SearchNodeAt(i, key, stack, node);
+      }
+      if (node->NextIsDeleted(i)) break;  // the insertion procedure has been aborted
+
+      // unlink the next pointer
+      while (true) {
+        auto *desc = desc_pool_->Get();
+        auto *prev = stack.at(i).first;
+        auto *next = node->DeleteNext(i, desc);
+        prev->CASNext(i, node, next, desc);
+        if (desc->PMwCAS()) break;
+        // the previous node has been modified, so retry
+        SearchNodeAt(i, key, stack, node);
+      }
+    }
+
+    if constexpr (!kIsRecovery) {
+      gc_->template AddGarbage<NodeTarget>(oid);
+    } else {
+      ReleaseNode(oid);
+    }
+  }
+
+  /**
    * @brief Perform a recovery procedure if needed.
    *
    */
   void
   RecoveryIfNeeded()
   {
+    constexpr bool kIsRecovery = true;
+    if (head_->GetLevel() == 0) {
+      // caused a failure during initialization
+      new (head_) Node_t{pop_id_, max_level_};
+      return;
+    }
+
+    if constexpr (!CanCAS<Payload>()) {
+      // release deleted payloads
+      auto &&fields_vec = gc_->template GetUnreleasedFields<PayloadTarget>();
+      for (auto &&fields : fields_vec) {
+        pmemobj_free(fields.at(kOldPos));
+      }
+    }
+
+    // gather intermidiate nodes
+    auto &&fields_vec = gc_->template GetUnreleasedFields<NodeTarget>();
+    std::vector<std::pair<PMEMoid *, Node_t *>> ins_nodes{};
+    std::vector<std::pair<PMEMoid *, Node_t *>> del_nodes{};
+    for (auto &&fields : fields_vec) {
+      auto *del_oid = fields.at(kOldPos);
+      if (!OID_IS_NULL(*del_oid)) {
+        auto *del_node = reinterpret_cast<Node_t *>(pmemobj_direct(*del_oid));
+        if (del_node->NextIsDeleted(del_node->GetLevel() - 1)) {
+          // caused a failure after unlinking
+          ReleaseNode(del_oid);
+        } else {
+          del_nodes.emplace_back(del_oid, del_node);
+        }
+      }
+
+      auto *ins_oid = fields.at(kNewPos);
+      if (!OID_IS_NULL(*ins_oid)) {
+        auto *ins_node = reinterpret_cast<Node_t *>(pmemobj_direct(*ins_oid));
+        if (ins_node->GetLevel() == 0) {
+          // caused a failure during the node construction
+          ReleaseNode(ins_oid);
+        } else if (ins_node->IsDeleted()) {
+          // ignore unlinked paths
+          ins_node->DeleteEmptyNextPointers();
+          ins_oid->off = kNullPtr;
+          pmem_persist(&(ins_oid->off), kWordSize);
+        } else if (!ins_node->HasInitNext()) {
+          // all the paths has been linked
+          ins_oid->off = kNullPtr;
+          pmem_persist(&(ins_oid->off), kWordSize);
+        } else {
+          ins_nodes.emplace_back(ins_oid, ins_node);
+        }
+      }
+    }
+
+    // undo/redo insert operations
+    for (auto &&[oid, node] : ins_nodes) {
+      // check that the node is inserted
+      const auto &key = node->GetKey();
+      auto &&[found, stack] = SearchNode(key);
+      if (!found || stack.front().second != node) {
+        // the insert operation did not succeed, so undo
+        ReleaseNode(oid);
+        continue;
+      }
+
+      // redo the insert operation
+      InsertNodeAtAllLevels<kIsRecovery>(key, node, stack, oid);
+    }
+
+    // redo delete operations
+    for (auto &&[oid, node] : del_nodes) {
+      const auto &key = node->GetKey();
+      auto &&[level, stack] = SearchNodeForRecovery(key, node);
+      DeleteNodeAtAllLevels<kIsRecovery>(key, node, stack, oid, level);
+    }
   }
 
   /*####################################################################################

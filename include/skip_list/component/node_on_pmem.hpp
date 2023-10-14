@@ -48,14 +48,17 @@ class NodeOnPMEM
 
   using KeyWOPtr = std::remove_pointer_t<Key>;
   using PayWOPtr = std::remove_pointer_t<Payload>;
-  using DescriptorPool = ::dbgroup::atomic::pmwcas::DescriptorPool;
+  using PMwCASDescriptor = ::dbgroup::atomic::pmwcas::component::PMwCASDescriptor;
 
   /*####################################################################################
    * Public constants
    *##################################################################################*/
 
-  /// @brief The most significant bit represents a deleted value.
+  /// @brief The bit represents a deleted value.
   static constexpr uint64_t kDelBit = 1UL << 62UL;
+
+  /// @brief The bit represents the initial value.
+  static constexpr uint64_t kInitBit = 1UL << 61UL;
 
   /*####################################################################################
    * Public classes
@@ -86,13 +89,14 @@ class NodeOnPMEM
   NodeOnPMEM(  //
       const uint64_t pool_uuid_lo,
       const size_t level)
-      : pool_id_{pool_uuid_lo}, level_{level}
+      : pool_id_{pool_uuid_lo}
   {
-    // reset all the pointers
-    memset(next_nodes_, 0, kWordSize * level);
-
     // flush the initial data
-    pmem_flush(this, sizeof(NodeOnPMEM) + level * kWordSize);
+    pmem_persist(&pool_id_, kWordSize);
+
+    // store the level as a consistent construction point
+    level_ = level;
+    pmem_persist(this, kWordSize);
   }
 
   /**
@@ -114,9 +118,9 @@ class NodeOnPMEM
       const Payload &payload,
       const size_t pay_len,
       PMEMobjpool *pop)
-      : pool_id_{pool_uuid_lo}, level_{level}
+      : pool_id_{pool_uuid_lo}
   {
-    // set a key value
+    // set a key/payload value
     if constexpr (KeyIsInline()) {
       memcpy(&key_, &key, sizeof(Key));
     } else if constexpr (IsVarLenData<Key>()) {
@@ -126,12 +130,19 @@ class NodeOnPMEM
       AllocatePmem(pop, &key_, sizeof(Key));
       memcpy(pmemobj_direct(key_), &key, sizeof(Key));
     }
-
-    // store a payload value
     PrepareWord(payload, pay_len, pop, &data_);
 
+    // set the initial bit to the next pointers
+    for (size_t i = 0; i < level; ++i) {
+      next_nodes_[i] = kInitBit;
+    }
+
     // flush the initial data
-    pmem_flush(this, sizeof(NodeOnPMEM) + level * kWordSize);
+    pmem_persist(&pool_id_, kWordSize + 2 * sizeof(PMEMoid) + level * kWordSize);
+
+    // store the level as a consistent construction point
+    level_ = level;
+    pmem_persist(this, kWordSize);
   }
 
   NodeOnPMEM(const NodeOnPMEM &) = delete;
@@ -229,6 +240,32 @@ class NodeOnPMEM
   }
 
   /**
+   * @retval true if the node includes the initialized next pointers.
+   * @retval false otherwise.
+   */
+  [[nodiscard]] auto
+  HasInitNext() const  //
+      -> bool
+  {
+    const auto *addr = &(next_nodes_[level_ - 1]);
+    auto off = atomic::pmwcas::Read<uint64_t>(addr, std::memory_order_relaxed);
+    return off == kInitBit;
+  }
+
+  /**
+   * @param level The level of the next node.
+   * @retval true if the next pointer is deleted.
+   * @retval false otherwise.
+   */
+  [[nodiscard]] auto
+  NextIsDeleted(const size_t level) const  //
+      -> bool
+  {
+    auto off = atomic::pmwcas::Read<uint64_t>(&(next_nodes_[level]), std::memory_order_relaxed);
+    return (off & kDelBit) > 0;
+  }
+
+  /**
    * @param level The level of the next node.
    * @return The pointer to the next node.
    */
@@ -256,57 +293,78 @@ class NodeOnPMEM
   }
 
   /**
-   * @brief Compare and swap the next node.
+   * @brief Prepare to store the new pointer to the next node.
+   *
+   * @param level The level of the next node.
+   * @param next The pointer to the next node.
+   * @param desc A PMwCAS descriptor.
+   */
+  void
+  StoreNext(  //
+      const size_t level,
+      NodeOnPMEM *next,
+      PMwCASDescriptor *desc)
+  {
+    desc->Add(&(next_nodes_[level]), kInitBit, pmemobj_oid(next).off, std::memory_order_release);
+  }
+
+  /**
+   * @brief Prepare to compare and swap the next node.
    *
    * @param level The level of the next node.
    * @param expected The pointer to the current next node.
    * @param desired The pointer to the new next node.
-   * @param pool A pool of PMwCAS descriptors.
-   * @retval true if CAS succeeds.
-   * @retval false otherwise.
+   * @param desc A PMwCAS descriptor.
    */
-  auto
+  void
   CASNext(  //
       const size_t level,
       NodeOnPMEM *expected,
       NodeOnPMEM *desired,
-      DescriptorPool *pool)  //
-      -> bool
+      PMwCASDescriptor *desc)
   {
     const auto expected_off = pmemobj_oid(expected).off;
     const auto new_off = pmemobj_oid(desired).off;
-
-    auto *desc = pool->Get();
     desc->Add(&(next_nodes_[level]), expected_off, new_off, std::memory_order_release);
-    return desc->PMwCAS();
   }
 
   /**
-   * @brief Compare and delete the next node.
+   * @brief Prepare a descriptor to delete the next node.
    *
    * @param level The level of the next node.
-   * @param pool A pool of PMwCAS descriptors.
+   * @param desc A PMwCAS descriptor.
    * @return The next node.
    */
   auto
   DeleteNext(  //
       const size_t level,
-      DescriptorPool *pool)  //
+      PMwCASDescriptor *desc)  //
       -> NodeOnPMEM *
   {
     auto *addr = &(next_nodes_[level]);
-    while (true) {
-      const auto next = atomic::pmwcas::Read<uint64_t>(addr, std::memory_order_relaxed);
-      assert((next & kDelBit) == 0);
+    const auto next = atomic::pmwcas::Read<uint64_t>(addr, std::memory_order_relaxed);
+    assert((next & kDelBit) == 0);
 
-      const auto del = next | kDelBit;
-      auto *desc = pool->Get();
-      desc->Add(addr, next, del, std::memory_order_acquire);
-      if (desc->PMwCAS()) {
-        return reinterpret_cast<NodeOnPMEM *>(pmemobj_direct(PMEMoid{pool_id_, next}));
+    const auto del = next | kDelBit;
+    desc->Add(addr, next, del, std::memory_order_acquire);
+    return reinterpret_cast<NodeOnPMEM *>(pmemobj_direct(PMEMoid{pool_id_, next}));
+  }
+
+  /**
+   * @brief Delete all the empty next pointers.
+   *
+   */
+  void
+  DeleteEmptyNextPointers()
+  {
+    for (size_t i = 1; i < level_; ++i) {
+      auto next = atomic::pmwcas::Read<uint64_t>(&(next_nodes_[i]), std::memory_order_relaxed);
+      if (next == kInitBit) {
+        next_nodes_[i] = kDelBit;
+        pmem_flush(&(next_nodes_[i]), kWordSize);
       }
-      SKIP_LIST_SPINLOCK_HINT
     }
+    pmem_drain();
   }
 
   /**
@@ -360,7 +418,7 @@ class NodeOnPMEM
    *
    * @param payload A payload value to be stored.
    * @param pay_len The length of the given payload.
-   * @param pool A pool of PMwCAS descriptors.
+   * @param desc A PMwCAS descriptor.
    * @param pop A pool for managing persistent memory.
    * @param tmp_oid A temporary OID to avoid memory leaks.
    * @retval The old value if the payload is updated.
@@ -370,7 +428,7 @@ class NodeOnPMEM
   Update(  //
       const Payload &payload,
       const size_t pay_len,
-      DescriptorPool *pool,
+      PMwCASDescriptor *desc,
       PMEMobjpool *pop,
       PMEMoid *tmp_oid)  //
       -> uint64_t
@@ -382,10 +440,9 @@ class NodeOnPMEM
     // the node is still active, so try updating a payload
     PrepareWord(payload, pay_len, pop, tmp_oid);
     do {
-      auto *desc = pool->Get();
       desc->Add(addr, old_v, tmp_oid->off, std::memory_order_release);
       if constexpr (!CanCAS<Payload>()) {
-        desc->Add(&(tmp_oid->off), tmp_oid->off, kNullPtr, std::memory_order_relaxed);
+        desc->Add(&(tmp_oid->off), tmp_oid->off, old_v, std::memory_order_relaxed);
       }
       if (desc->PMwCAS()) return old_v;
 
@@ -403,14 +460,14 @@ class NodeOnPMEM
   /**
    * @brief Delete the stored payload.
    *
-   * @param pool A pool of PMwCAS descriptors.
+   * @param desc A PMwCAS descriptor.
    * @param oid A temporary OID to avoid memory leak.
    * @retval true if the payload is deleted.
    * @retval false if the payload has already been deleted.
    */
   auto
   Delete(  //
-      DescriptorPool *pool,
+      PMwCASDescriptor *desc,
       PMEMoid *oid)  //
       -> bool
   {
@@ -419,7 +476,6 @@ class NodeOnPMEM
     auto old_v = atomic::pmwcas::Read<uint64_t>(addr, std::memory_order_relaxed);
     while ((old_v & kDelBit) == 0) {
       const auto del_v = old_v | kDelBit;
-      auto *desc = pool->Get();
       desc->Add(addr, old_v, del_v, std::memory_order_relaxed);
       desc->Add(&(oid->off), kNullPtr, del_off, std::memory_order_relaxed);
       if (desc->PMwCAS()) return true;
@@ -479,13 +535,17 @@ class NodeOnPMEM
       memcpy(&(oid->off), &payload, kWordSize);
       assert((oid->off & kDelBit) == 0);
     } else if constexpr (IsVarLenData<Payload>()) {
-      AllocatePmem(pop, oid, kHeaderLen + pay_len);
+      const auto total_len = kHeaderLen + pay_len;
+      AllocatePmem(pop, oid, total_len);
       auto *ptr = pmemobj_direct(*oid);
       *reinterpret_cast<size_t *>(ptr) = pay_len;
       memcpy(ShiftAddr(ptr, kHeaderLen), payload, pay_len);
+      pmem_flush(ptr, total_len);
     } else {
       AllocatePmem(pop, oid, sizeof(Payload));
-      memcpy(pmemobj_direct(*oid), &payload, sizeof(Payload));
+      auto *addr = pmemobj_direct(*oid);
+      memcpy(addr, &payload, sizeof(Payload));
+      pmem_flush(addr, sizeof(Payload));
     }
   }
 
@@ -503,11 +563,11 @@ class NodeOnPMEM
    * Internal member variables
    *##################################################################################*/
 
-  /// @brief The UUID of a PMEMobjpool.
-  size_t pool_id_{0};
-
   /// @brief The top level of this node.
   size_t level_{0};
+
+  /// @brief The UUID of a PMEMobjpool.
+  size_t pool_id_{0};
 
   /// @brief The key value stored in this node.
   PMEMoid key_{OID_NULL};

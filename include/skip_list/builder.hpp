@@ -86,12 +86,10 @@ class Builder
    * @param max_level The maxmum level of nodes.
    * @return Oneself.
    */
-  constexpr auto
-  SetMaxLevel(const size_t max_level)  //
-      -> Builder &
+  void
+  SetMaxLevel(const size_t max_level)
   {
     max_level_ = max_level;
-    return *this;
   }
 
   /**
@@ -100,12 +98,10 @@ class Builder
    * @param p The probability to determine node heights.
    * @return Oneself.
    */
-  constexpr auto
-  SetProbability(const double p)  //
-      -> Builder &
+  void
+  SetProbability(const double p)
   {
     p_ = p;
-    return *this;
   }
 
   /**
@@ -114,12 +110,10 @@ class Builder
    * @param gc_interval The GC interval in microseconds.
    * @return Oneself.
    */
-  constexpr auto
-  SetGCInterval(const size_t gc_interval)  //
-      -> Builder &
+  void
+  SetGCInterval(const size_t gc_interval)
   {
     gc_interval_ = gc_interval;
-    return *this;
   }
 
   /**
@@ -128,12 +122,10 @@ class Builder
    * @param gc_thread_num The number of worker threads for GC.
    * @return Oneself.
    */
-  constexpr auto
-  SetGCThreadNum(const size_t gc_thread_num)  //
-      -> Builder &
+  void
+  SetGCThreadNum(const size_t gc_thread_num)
   {
     gc_num_ = gc_thread_num;
-    return *this;
   }
 
  protected:
@@ -219,12 +211,10 @@ class BuilderOnPMEM : public Builder<Key, Payload, Comp>
    * @param index_size The maximum capacity in bytes for an index.
    * @return Oneself.
    */
-  constexpr auto
-  SetIndexSize(const size_t index_size)  //
-      -> BuilderOnPMEM &
+  void
+  SetIndexSize(const size_t index_size)
   {
     index_size_ = index_size;
-    return *this;
   }
 
   /**
@@ -233,12 +223,10 @@ class BuilderOnPMEM : public Builder<Key, Payload, Comp>
    * @param layout_name The layout name.
    * @return Oneself.
    */
-  constexpr auto
-  SetLayout(const std::string &layout_name)  //
-      -> BuilderOnPMEM &
+  void
+  SetLayout(const std::string &layout_name)
   {
     layout_name_ = layout_name;
-    return *this;
   }
 
   /**
@@ -247,12 +235,10 @@ class BuilderOnPMEM : public Builder<Key, Payload, Comp>
    * @param gc_size The maximum capacity in bytes for GC.
    * @return Oneself.
    */
-  constexpr auto
-  SetGCSize(const size_t gc_size)  //
-      -> BuilderOnPMEM &
+  void
+  SetGCSize(const size_t gc_size)
   {
     gc_size_ = gc_size;
-    return *this;
   }
 
  private:

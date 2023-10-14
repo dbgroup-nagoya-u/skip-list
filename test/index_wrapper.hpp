@@ -39,10 +39,14 @@ class IndexWrapper
   {
     constexpr size_t kIndexSize = 8UL * 1024 * 1024 * 1024;
     constexpr size_t kGCSize = PMEMOBJ_MIN_POOL * DBGROUP_TEST_THREAD_NUM;
+    constexpr size_t kGCThreadNum = 2;
     const auto &pool_path = GetTmpPoolPath();
 
     Builder_t builder{pool_path};
-    index_ = builder.SetIndexSize(kIndexSize).SetGCSize(kGCSize).Build();
+    builder.SetIndexSize(kIndexSize);
+    builder.SetGCSize(kGCSize);
+    builder.SetGCThreadNum(kGCThreadNum);
+    index_ = builder.Build();
   }
 
   IndexWrapper(const IndexWrapper &) = delete;

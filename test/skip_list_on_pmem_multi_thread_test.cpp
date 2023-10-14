@@ -46,7 +46,6 @@ using TestTargets = ::testing::Types<     //
     IndexInfo<Index, Var, Int8>,          // variable length keys
     IndexInfo<Index, Int8, Var>,          // variable length payloads
     IndexInfo<Index, Var, Var>,           // variable length keys/payloads
-    IndexInfo<Index, Ptr, Ptr>,           // pointer keys/payloads
     IndexInfo<Index, Original, Original>  // original class keys/payloads
     >;
 

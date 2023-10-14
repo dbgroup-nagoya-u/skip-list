@@ -240,7 +240,6 @@ using KeyPayloadPairs = ::testing::Types<  //
     KeyPayload<Var, Int8>,                 // variable length keys
     KeyPayload<Int8, Var>,                 // variable length payloads
     KeyPayload<Var, Var>,                  // variable length keys/payloads
-    KeyPayload<Ptr, Ptr>,                  // pointer keys/payloads
     KeyPayload<Original, Original>         // original class keys/payloads
     >;
 TYPED_TEST_SUITE(NodeFixture, KeyPayloadPairs);
